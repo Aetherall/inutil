@@ -1,0 +1,120 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The inutil SDK runtime library (assembly Inutil.dll) — the runtime marshaller seam (§7.3) + the wrap
+       helpers a flipped proxy body forwards through (§7.2's splice target). This is the assembly the IL-rewrite
+       seam references BY NAME: InteropPatch's WrapHelpers synthesizes `call Inutil.Sugar.Il2CppSugar.WrapTask[T]`
+       into every flipped Task-returning proxy, and those calls resolve HERE at load. Game-AGNOSTIC (the Sdk
+       interop tier): names no Assembly-CSharp / UnityEngine type, only Il2CppInterop core + BCL.
+
+       net6.0: both loaders host a .NET 6 CoreCLR. Il2CppInterop is referenced straight from the staged loader
+       tree (Private=false — bind the loader's already-loaded identity, never ship our own), same pattern as the
+       battery shims, so it builds fully OFFLINE against .unity-build. Build:
+         dotnet build managed/src/Inutil/Inutil.csproj -->
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>Inutil</AssemblyName>
+    <RootNamespace>Inutil</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+
+    <INUTIL_UNITY_DIR Condition="'$(INUTIL_UNITY_DIR)' == ''">$(MSBuildThisFileDirectory)../../../.unity-build</INUTIL_UNITY_DIR>
+    <BepInExDir Condition="'$(BepInExDir)' == ''">$(INUTIL_UNITY_DIR)/loaders/bepinex/BepInEx</BepInExDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Sugar/Il2CppSugar.cs" />
+    <Compile Include="Marshal/Il2CppConvShapeSource.cs" />
+    <Compile Include="Marshal/Il2CppConvRuntime.cs" />
+    <Compile Include="Marshal/ContainerBridge.cs" />
+    <Compile Include="Marshal/MutableListAdapter.cs" />
+    <Compile Include="Marshal/GameException.cs" />
+    <Compile Include="Marshal/ValueTypeBridge.cs" />
+    <Compile Include="Marshal/ReflectionTypeRef.cs" />
+    <Compile Include="Marshal/Il2CppMarshal.cs" />
+    <!-- The managed hook engine (§7.7 managed half): the substrate-agnostic dispatcher/install/ABI-plan
+         core (Hooks), plus the loader glue (Host) that [DllImport]s inutil_core.dll and wires the native
+         install callback in. Self-contained over Il2CppInterop.Runtime — no schema/marshaller dependency. -->
+    <Compile Include="Hooks/Hooks.cs" />
+    <Compile Include="Host/HostCore.cs" />
+    <Compile Include="Host/LoaderAdapter.cs" />
+    <!-- §7.11 concurrency & scheduling: the main-thread pump + coroutine runner (substrate-agnostic; ticked
+         once per frame by FrameDriver via MainThread.Drain). Ported ~verbatim from v1 + the Post<T> pre-pump
+         fail-loud guard. Self-contained over Il2CppInterop.Runtime (IL2CPP.il2cpp_gchandle_* for Pin). -->
+    <Compile Include="Host/MainThread.cs" />
+    <Compile Include="Host/Coroutines.cs" />
+    <!-- §7.10 loader integration (SDK core): the mod-facing lifecycle registry (ILoad/IUnload/ITick/IGui +
+         Mods) and the single per-frame FrameDriver both shims drive — making the ITick/IGui-inert bug
+         structurally impossible. The ergonomic Hook<T> discovery chain layers onto Mods in a later increment. -->
+    <Compile Include="Mods/Mods.cs" />
+    <Compile Include="Mods/Mods.Discover.cs" />
+    <Compile Include="Mods/HookMatch.cs" />
+    <Compile Include="Mods/Hook.cs" />
+    <!-- The config seam (design B, 2026-07-14): IConfigure + the per-mod typed bag over BepInEx-dialect
+         .cfg files — fired before OnLoad, re-fired LIVE on every file edit (no ALC churn), materializing
+         self-documented files the launcher's structured editor reads. Loader-agnostic: the shim injects
+         only the root dir (ModConfigStore.Root). -->
+    <Compile Include="Mods/ModConfig.cs" />
+    <!-- Mod diagnostics: the game-free store of recent compile/load outcomes a game-specific renderer polls
+         to surface "your hot-reload edit didn't take" (OT's dev moderrors coremod toasts them). -->
+    <Compile Include="Mods/Diagnostics.cs" />
+    <Compile Include="Host/FrameDriver.cs" />
+    <!-- The collectible-ALC mod primitive (§7.9): loads ONE mod assembly, shares the host's loaded assemblies
+         (type identity) so the mod's hooks land in the host's one table; the mod is the ALC's sole host root,
+         so Mods.RemoveAll un-roots it and it collects. In Inutil.dll so it defers to the plugin's context. -->
+    <Compile Include="Host/ModContext.cs" />
+    <!-- §7.10 shared loader-shim helpers: the loader-agnostic bring-up (WarnIfInteropUnpatched) both production
+         shims route through — one impl, so the drift that made MelonLoader's ITick/IGui inert can't recur. -->
+    <Compile Include="Host/LoaderShim.cs" />
+    <!-- Wire (metadata-pillar consumer, improved-proxy serialization): serialize a game's il2cpp proxy DIRECTLY to
+         its wire JSON via System.Text.Json, using the [JsonPropertyName] InteropPatch re-attached from the recovered
+         wiremap — no twin, no per-game Newtonsoft. net6 JsonConverterFactory over Il2CppObjectBase (the net7+
+         contract resolver is absent in the game's .NET 6), opt-in so interop bookkeeping never leaks. -->
+    <Compile Include="Wire/Wire.cs" />
+    <!-- docs/contribution/architecture/17-reach-faces.md fault-safe scope (Fields/Introspect/Invoke reframed as substrate): the FIRST managed consumer of
+         inutil_core's SEH fault-guard. InvokeResult (the Ok|Faulted|Threw verdict) + Safe (TryInvoke substrate over
+         the real il2cpp_runtime_invoke, and the ergonomic Safe.Run(delegate) scope via a reverse-P/Invoke trampoline).
+         Il2CppInterop core + BCL only; game-agnostic, ships in Inutil.dll for every game. -->
+    <Compile Include="Safe/InvokeResult.cs" />
+    <Compile Include="Safe/Safe.cs" />
+    <!-- docs/contribution/architecture/17-reach-faces.md — the raw by-name / discovery surface for the irreducible §5 cases (erased Il2CppSystem.Object
+         handle, unknown-at-author-time type, REPL): Probe (the guard_read fault-safe pointer probe — the READ twin of
+         Safe's guarded invoke), Invoke (by-name method reach, guarded via Safe.TryInvoke), Introspect (member
+         discovery). The escape hatch, not the default reach — a typed by-name member access is. -->
+    <Compile Include="Safe/Probe.cs" />
+    <Compile Include="Invoke/Invoke.cs" />
+    <Compile Include="Introspect/Introspect.cs" />
+    <!-- docs/contribution/architecture/17-reach-faces.md — the by-name field substrate for a caller that needs
+         `SetStruct`-style member writes: `Inutil.Fields.SetStruct(_obj, "Gear", g)`. Reaches (and correctly
+         reads/writes) the fields Il2CppInterop's typed proxy.Field can't — Nullable value fields, ref-bearing
+         value-type fields (§7.5). Ported from v1 minus the runtime kind-dispatch (the generator picks Get*/Set* at
+         compile time). Il2CppInterop core + BCL only; game-agnostic. -->
+    <Compile Include="Fields/Fields.cs" />
+  </ItemGroup>
+
+  <!-- The pure schema engine (Conv tree, correspondence, planner) — our own code, deployed with the SDK. Picks
+       Schema's net6.0 target (why Schema multi-targets net6.0;net9.0). -->
+  <ItemGroup>
+    <ProjectReference Include="../Inutil.Schema/Inutil.Schema.csproj" />
+  </ItemGroup>
+
+  <!-- The loader's already-loaded il2cpp interop identity (Private=false — never ship ours). Il2Cppmscorlib
+       is the il2cpp BCL proxy tier (Il2CppSystem.Type/Reflection.MethodInfo/Nullable<>) the §7.7 hook engine's
+       generic-inflation path binds at compile time — game-AGNOSTIC (identical mscorlib for every il2cpp game;
+       names no Assembly-CSharp / UnityEngine type), so it keeps the SDK's game-free property.
+       -p:RefStubs=true swaps the GENERATED Il2Cppmscorlib for the committed ref-stub (managed/refstubs/ —
+       same names + signatures, throw-null bodies), so the engine builds with NO booted game at all; the core
+       Il2CppInterop refs stay the pinned zip's real assemblies either way. -->
+  <ItemGroup>
+    <Reference Include="$(BepInExDir)/core/Il2CppInterop.Runtime.dll"><Private>false</Private></Reference>
+    <Reference Include="$(BepInExDir)/core/Il2CppInterop.Common.dll"><Private>false</Private></Reference>
+    <Reference Include="$(BepInExDir)/interop/Il2Cppmscorlib.dll" Condition="'$(RefStubs)' != 'true'"><Private>false</Private></Reference>
+    <Reference Include="$(RefStubsDir)/Il2Cppmscorlib.dll" Condition="'$(RefStubs)' == 'true'"><Private>false</Private></Reference>
+  </ItemGroup>
+
+</Project>

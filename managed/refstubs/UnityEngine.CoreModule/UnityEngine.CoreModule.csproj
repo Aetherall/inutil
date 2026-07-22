@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- UnityEngine.CoreModule REF-STUB — game-FREE compile reference for the inutil BepInEx host plugin
+       (Inutil.BepInEx.dll), whose injected main-thread pump (InutilPump : MonoBehaviour) touches a few
+       UnityEngine-core types: Object/Component/Behaviour/MonoBehaviour/GameObject/HideFlags. Declared with the
+       SAME assembly name + type full names + member signatures Il2CppInterop generates (incl. the exact
+       HideFlags enum VALUES, which the compiler bakes into IL), so the plugin builds with no game and binds the
+       user's REAL UnityEngine.CoreModule at runtime. Standard Unity API surface only — no game-derived data. -->
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>UnityEngine.CoreModule</AssemblyName>
+    <RootNamespace>UnityEngine</RootNamespace>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <NoWarn>$(NoWarn);CS0436;CS8981</NoWarn>
+    <BepInExDir Condition="'$(BepInExDir)' == ''">$(MSBuildThisFileDirectory)../../.unity-build/loaders/bepinex/BepInEx</BepInExDir>
+    <!-- The built Il2Cppmscorlib ref-stub (UnityEngine.Object derives Il2CppSystem.Object). The build passes
+         the just-built path; default to the sibling project's output for a bare `dotnet build`. -->
+    <Il2CppmscorlibStub Condition="'$(Il2CppmscorlibStub)' == ''">$(MSBuildThisFileDirectory)../Il2Cppmscorlib/bin/Release/Il2Cppmscorlib.dll</Il2CppmscorlibStub>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="$(BepInExDir)/core/Il2CppInterop.Runtime.dll"><Private>false</Private></Reference>
+    <Reference Include="$(Il2CppmscorlibStub)"><Private>false</Private></Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="Stubs.cs" />
+  </ItemGroup>
+
+</Project>

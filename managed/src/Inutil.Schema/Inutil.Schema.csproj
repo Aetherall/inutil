@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- inutil.Schema — the standalone, unit-testable core of the v2 engine (docs/contribution/architecture/10-schema.md, built per §9 step 3). It owns the STRUCTURAL invariants both seams share — the virtual-slot
+       planner (§7.4) first — over PURE abstractions (ISlotType/ISlotMethod), so the planning logic that had
+       the v12/v15/v16/v17 bugs is testable against synthetic type shapes with no Cecil, no runtime, no real
+       proxy. The IL-rewrite seam (Cecil) and the runtime marshaller (reflection) are thin adapters that
+       PROJECT their world onto these abstractions and consume the plan — neither reimplements the rules.
+
+       Multi-targeted so both consumers bind it: net6.0 for the loader-side Facade, net9.0 for the host-side
+       InteropPatch CLI + these unit tests. No external dependencies. -->
+
+  <PropertyGroup>
+    <TargetFrameworks>net6.0;net9.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Inutil.Schema</RootNamespace>
+    <AssemblyName>Inutil.Schema</AssemblyName>
+  </PropertyGroup>
+
+</Project>

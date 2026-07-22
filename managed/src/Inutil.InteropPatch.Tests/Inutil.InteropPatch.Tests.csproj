@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Runs the IL-rewrite seam against the REAL generated ToyGame proxies (Assembly-CSharp.dll + ToyGame.Core.dll
+       from the loader tree), OFFLINE — no game, no wine. Proves the pure engine (planner + Task family) drives a
+       real Cecil rewrite: the cross-module virtual Task<Session> slot flips in lockstep (v15) and the module
+       round-trips through Cecil. Dependency-free runner; net9.0. -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Inutil.InteropPatch.Tests</RootNamespace>
+    <AssemblyName>inutil-interoppatch-tests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Inutil.InteropPatch/Inutil.InteropPatch.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Integration tests for the metadata pillar: inutil's OWN Cpp2IL pass over the REAL provisioned ToyGame, then
+       the CecilMemberRef projection reading the produced stub. Needs a provisioned game (Cpp2IL requires a real
+       il2cpp binary), so it SKIPS gracefully offline — the pure wire classifier / projection unit tests live in
+       Inutil.Schema.Tests and Inutil.InteropPatch.Tests and gate with no game. Dependency-free runner (no NuGet
+       test framework), matching the other suites. -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Inutil.Metadata.Tests</RootNamespace>
+    <AssemblyName>inutil-metadata-tests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Inutil.Metadata/Inutil.Metadata.csproj" />
+  </ItemGroup>
+
+</Project>

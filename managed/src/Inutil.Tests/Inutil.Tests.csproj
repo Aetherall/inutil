@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Offline unit tests for the SDK runtime seam's GAME-INDEPENDENT surface: the Il2CppSugar Task carrier (the
+       nint identity/CWT path — no il2cpp instantiation) and the Il2CppConvRuntime structure (Leaf identity,
+       null propagation, fail-loud deferral). net9.0 because that is the only installed RUNTIME; it references
+       the net6 Inutil.dll (forward-compatible) and copies Il2CppInterop.Runtime.dll locally purely so the
+       module's il2cpp TYPE references RESOLVE at load — the tests never construct an il2cpp object. -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <AssemblyName>inutil-sdk-tests</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <INUTIL_UNITY_DIR Condition="'$(INUTIL_UNITY_DIR)' == ''">$(MSBuildThisFileDirectory)../../../.unity-build</INUTIL_UNITY_DIR>
+    <BepInExDir Condition="'$(BepInExDir)' == ''">$(INUTIL_UNITY_DIR)/loaders/bepinex/BepInEx</BepInExDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Inutil/Inutil.csproj" />
+  </ItemGroup>
+
+  <!-- Copy Il2CppInterop.Runtime.dll locally (default Private=true) so Inutil.dll's il2cpp type refs resolve. -->
+  <ItemGroup>
+    <Reference Include="$(BepInExDir)/core/Il2CppInterop.Runtime.dll" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The PRODUCTION MelonLoader entrypoint (§7.10): a thin MelonMod over the SDK. Its OnUpdate/OnGUI one-line
+       into FrameDriver — the SAME single per-frame seam the BepInEx pump drives. This is where the confirmed
+       HIGH bug shipped in v1 (OnUpdate did only MainThread.Drain(), never Mods.Tick(); there was no OnGUI at
+       all — so ITick/IGui mods were silently inert under MelonLoader). Routing through FrameDriver makes that
+       drift structurally impossible. Everything else is shared verbatim with the BepInEx host. Build:
+         dotnet build managed/src/Inutil.MelonLoader/Inutil.MelonLoader.csproj -->
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>Inutil.MelonLoader</AssemblyName>
+    <RootNamespace>Inutil.Host</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+    <DefineConstants>$(DefineConstants);MELONLOADER</DefineConstants>
+
+    <INUTIL_UNITY_DIR Condition="'$(INUTIL_UNITY_DIR)' == ''">$(MSBuildThisFileDirectory)../../../.unity-build</INUTIL_UNITY_DIR>
+    <MelonDir Condition="'$(MelonDir)' == ''">$(INUTIL_UNITY_DIR)/loaders/melonloader/MelonLoader</MelonDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="MelonLoaderMod.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Inutil/Inutil.csproj"><Private>false</Private></ProjectReference>
+    <ProjectReference Include="../Inutil.Mods/Inutil.Mods.csproj"><Private>false</Private></ProjectReference>
+  </ItemGroup>
+
+  <!-- MelonLoader's own net6 assemblies (Private=false — the loader has these loaded). -->
+  <ItemGroup>
+    <Reference Include="$(MelonDir)/net6/MelonLoader.dll"><Private>false</Private></Reference>
+    <Reference Include="$(MelonDir)/net6/Il2CppInterop.Runtime.dll"><Private>false</Private></Reference>
+    <Reference Include="$(MelonDir)/net6/Il2CppInterop.Common.dll"><Private>false</Private></Reference>
+  </ItemGroup>
+
+</Project>

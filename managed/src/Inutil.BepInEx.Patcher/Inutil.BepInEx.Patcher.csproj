@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The BepInEx 6 (IL2CPP) PRELOADER PATCHER — the end-user half of the natural-typing pass, revived from
+       v1's shape on v2's rewrite engine. A tiny BasePatcher (deployed to BepInEx/patchers/, NOT plugins/)
+       that rewrites the loader's generated Il2CppInterop proxies IN MEMORY in the preloader window — after
+       BepInEx generated + read them, before it byte-loads them — so the natural-typed surface binds the very
+       session a game/loader update regenerated the proxies, with no relaunch and no launcher orchestration.
+       The host plugin (Inutil.BepInEx) then persists the IDENTICAL rewrite to disk at Load, before any mod
+       compiles (CsModCompiler reads its references from disk); PatchDirectory.PatchModule is the one shared
+       per-module implementation, so the two sides cannot diverge.
+
+       The engine + schema are compiled AS SOURCE so this patcher binds BepInEx's OWN Mono.Cecil (0.11.4 —
+       the identity of the AssemblyDefinitions the preloader hands the patch method; a dll-referenced engine
+       built against NuGet Cecil 0.11.5 could pull a second Cecil identity and miscast). Zero dll deps of our
+       own — v1's discipline: bind only BepInEx-already-loaded assemblies. net6.0 — BepInEx hosts a .NET 6
+       CoreCLR. Build:
+         dotnet build managed/src/Inutil.BepInEx.Patcher/Inutil.BepInEx.Patcher.csproj -->
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>Inutil.BepInEx.Patcher</AssemblyName>
+    <RootNamespace>Inutil.Host.Patcher</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+
+    <INUTIL_UNITY_DIR Condition="'$(INUTIL_UNITY_DIR)' == ''">$(MSBuildThisFileDirectory)../../../.unity-build</INUTIL_UNITY_DIR>
+    <BepInExDir Condition="'$(BepInExDir)' == ''">$(INUTIL_UNITY_DIR)/loaders/bepinex/BepInEx</BepInExDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="InteropPatcher.cs" />
+    <!-- The v2 rewrite engine + the pure schema it plans from, as source (see header). Any engine use of a
+         Cecil 0.11.5-only API fails THIS build loudly against the loader's 0.11.4 — a build-time tripwire,
+         not a runtime surprise. -->
+    <Compile Include="../Inutil.Schema/*.cs" />
+    <Compile Include="../Inutil.InteropPatch/*.cs" />
+  </ItemGroup>
+
+  <!-- BepInEx's own preloader + core + its Mono.Cecil (already loaded when patchers run). Private=false —
+       bind the host's copies; never ship our own (a second Cecil identity would not match the ADs BepInEx
+       hands us). -->
+  <ItemGroup>
+    <Reference Include="$(BepInExDir)/core/BepInEx.Core.dll"><Private>false</Private></Reference>
+    <Reference Include="$(BepInExDir)/core/BepInEx.Preloader.Core.dll"><Private>false</Private></Reference>
+    <Reference Include="$(BepInExDir)/core/Mono.Cecil.dll"><Private>false</Private></Reference>
+    <Reference Include="$(BepInExDir)/core/Mono.Cecil.Rocks.dll"><Private>false</Private></Reference>
+  </ItemGroup>
+
+</Project>

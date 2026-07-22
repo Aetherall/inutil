@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- inutil.InteropPatch — the IL-rewrite seam (docs/contribution/architecture/11-interop-patch.md). A thin adapter over the pure schema
+       engine: it PROJECTS Mono.Cecil onto ISlotType/ISlotMethod (CecilProjection) so the VirtualSlotPlanner
+       drives a real proxy exactly as it drives synthetic test shapes, then applies each member's own plan
+       (per-member splice + return-type flip). This is where the pure engine first touches a real proxy.
+
+       Mono.Cecil comes from the NuGet cache (offline), so the seam builds without a provisioned loader; the
+       tests read the real generated proxies from the loader tree at runtime. net6.0 (the loader preloader
+       patcher) + net9.0 (the offline CLI + tests). -->
+
+  <PropertyGroup>
+    <TargetFrameworks>net6.0;net9.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Inutil.InteropPatch</RootNamespace>
+    <AssemblyName>Inutil.InteropPatch</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Mono.Cecil" Version="0.11.5" />
+    <ProjectReference Include="../Inutil.Schema/Inutil.Schema.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Inutil.TestKit — the SHARED test PROTOCOL. One record type + one (de)serializer + one aggregator,
+       referenced by BOTH sides so they cannot drift (docs/contribution/01-philosophy.md: "if two pieces of code must
+       agree, make them share the object that says what they agree on"):
+         - the battery PLUGIN (net6, inside the loader) references this to EMIT records;
+         - the host CLI (net9) references this to READ + JUDGE them.
+       Multi-targeted so each consumer binds an in-box System.Text.Json (no NuGet restore, offline-clean):
+       net6.0 for the loader plugins, net9.0 for the host tools (the only runtime installed here). -->
+
+  <PropertyGroup>
+    <TargetFrameworks>net6.0;net9.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Inutil.TestKit</RootNamespace>
+    <AssemblyName>Inutil.TestKit</AssemblyName>
+  </PropertyGroup>
+
+</Project>

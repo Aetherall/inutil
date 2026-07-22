@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Offline test for the no-build mod host (§7.9): drives CsModCompiler -> ModContext (collectible ALC) ->
+       Mods.Discover -> FrameDriver.Tick -> Mods.RemoveAll end-to-end with a REAL compiled lifecycle mod. All
+       pure-managed (a lifecycle mod touches no il2cpp), so it runs in the offline gate. net9.0 host (like the
+       other *-tests); references Inutil.Mods (net6.0) + brings Roslyn transitively so Compile runs here. -->
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>inutil-mods-tests</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+
+    <INUTIL_UNITY_DIR Condition="'$(INUTIL_UNITY_DIR)' == ''">$(MSBuildThisFileDirectory)../../../.unity-build</INUTIL_UNITY_DIR>
+    <BepInExDir Condition="'$(BepInExDir)' == ''">$(INUTIL_UNITY_DIR)/loaders/bepinex/BepInEx</BepInExDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Inutil.Mods/Inutil.Mods.csproj" />
+    <!-- HookMatch's array tier compares TYPE IDENTITY against Il2CppInterop's array wrappers, so the combined
+         cost-quote matcher case (widened Il2CppStringArray params + a nested Callback mirror in ONE signature)
+         must spell the REAL Il2CppStringArray — a fake can't be reference-equal. Same Private=false loader
+         identity as Inutil itself; the suite's Resolving hook already loads it at runtime from the staged dirs. -->
+    <Reference Include="$(BepInExDir)/core/Il2CppInterop.Runtime.dll"><Private>false</Private></Reference>
+  </ItemGroup>
+
+</Project>

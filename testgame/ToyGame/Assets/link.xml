@@ -1,0 +1,5 @@
+<!-- Preserve the whole game assembly so IL2CPP's managed stripping keeps every ToyGame
+     member (real methodPointers in GameAssembly.dll for the interceptor to hook). -->
+<linker>
+  <assembly fullname="Assembly-CSharp" preserve="all"/>
+</linker>

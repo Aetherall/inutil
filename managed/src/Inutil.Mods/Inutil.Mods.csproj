@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Inutil.Mods — the no-build .cs mod HOST (§7.9): compile-from-source (CsModCompiler, Roslyn) + load into
+       the collectible ModContext + Mods.Discover, across three explicitly-named lifecycles (Coremods load-once
+       permanent, ModLibs shared-source, CsModHost hot-reload per-generation). Separate from Inutil.dll (the
+       SDK) because it drags in Roslyn — a mod references Inutil.dll's Hook<T>/Hooks, never this host. net6.0:
+       both loaders host a .NET 6 CoreCLR. Build:
+         dotnet build managed/src/Inutil.Mods/Inutil.Mods.csproj -->
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>Inutil.Mods</AssemblyName>
+    <RootNamespace>Inutil</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+    <!-- Copy the Roslyn package assemblies into bin so the loader can deploy Microsoft.CodeAnalysis* beside
+         Inutil.Mods.dll (its dep must RESOLVE or the loader's plugin scan chokes on it). The System.* Roslyn
+         deps (Immutable/Metadata/…) all live in the .NET runtime, so only the two CodeAnalysis DLLs ship. -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="CsModCompiler.cs" />
+    <Compile Include="CsModHost.cs" />
+    <Compile Include="Coremods.cs" />
+    <Compile Include="ModLibs.cs" />
+    <Compile Include="Repl.cs" />
+    <Compile Include="ReplTransport.cs" />
+    <Compile Include="ReplServer.cs" />
+    <Compile Include="ReplHttpServer.cs" />
+    <Compile Include="ReplMcpServer.cs" />
+  </ItemGroup>
+
+  <!-- The SDK: ModContext (collectible ALC), Mods.Discover, MainThread — the primitives the host drives. -->
+  <ItemGroup>
+    <ProjectReference Include="../Inutil/Inutil.csproj" />
+  </ItemGroup>
+
+  <!-- The in-process C# compiler (pinned to the same 4.3.0 the loader's Roslyn is, so a source generator built
+       against it binds one shared copy — matters only for the §7.13 generator path, kept pinned regardless). -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.3.0" />
+    <!-- The scripting API (CSharpScript / ScriptState) behind the interactive REPL (§7.12). Same 4.3.0 pin; its
+         runtime closure is already present beside the plugin (the loader's Roslyn carries Scripting). -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="4.3.0" />
+  </ItemGroup>
+
+</Project>

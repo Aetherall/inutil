@@ -1,0 +1,4 @@
+# devenv inputs. https://devenv.sh
+inputs:
+  nixpkgs:
+    url: github:cachix/devenv-nixpkgs/rolling

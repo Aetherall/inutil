@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Il2Cppmscorlib REF-STUB — a game-FREE compile reference so the inutil engine (Inutil.dll) builds with
+       NO booted game. It declares ONLY the handful of Il2CppSystem.* BCL-projection types the engine
+       references (Object/ValueType/Type/Nullable<T>/Reflection.MethodInfo/Dictionary<K,V>), with the SAME
+       assembly name + type full names + member signatures Il2CppInterop generates — so the engine's IL
+       memberrefs bind the user's REAL regenerated Il2Cppmscorlib by name at runtime. Bodies are never run
+       (the stub is Private=false: a compile reference only, never deployed/shipped). Contains only standard
+       .NET BCL API surface — no game-derived data. See refstubs/README.md. -->
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>Il2Cppmscorlib</AssemblyName>
+    <RootNamespace>Il2CppSystem</RootNamespace>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <!-- The il2cpp BCL projection's full names live in Il2CppSystem.*; the engine binds them, not real BCL. -->
+    <NoWarn>$(NoWarn);CS0436;CS8981</NoWarn>
+    <BepInExDir Condition="'$(BepInExDir)' == ''">$(MSBuildThisFileDirectory)../../.unity-build/loaders/bepinex/BepInEx</BepInExDir>
+  </PropertyGroup>
+
+  <!-- The proxy base type (Il2CppObjectBase) lives in Il2CppInterop.Runtime — game-free (it ships in the
+       pinned BepInEx zip). Private=false: never copied, it's the loader's own already-loaded assembly. -->
+  <ItemGroup>
+    <Reference Include="$(BepInExDir)/core/Il2CppInterop.Runtime.dll"><Private>false</Private></Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="Stubs.cs" />
+  </ItemGroup>
+
+</Project>
