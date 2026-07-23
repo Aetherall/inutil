@@ -76,6 +76,10 @@
          wiremap — no twin, no per-game Newtonsoft. net6 JsonConverterFactory over Il2CppObjectBase (the net7+
          contract resolver is absent in the game's .NET 6), opt-in so interop bookkeeping never leaks. -->
     <Compile Include="Wire/Wire.cs" />
+    <!-- Json: the per-game (de)serialize delegate seam (UseSerializer/UseDeserializer + To/ToArray/ToDict/From) —
+         Wire.WriteOpaque's fallback for a proxy with no recovered wire members, and the game-agnostic half of any
+         mod that needs the game's own converters for a subtree recovered metadata can't structurally describe. -->
+    <Compile Include="Wire/Json.cs" />
     <!-- docs/contribution/architecture/17-reach-faces.md fault-safe scope (Fields/Introspect/Invoke reframed as substrate): the FIRST managed consumer of
          inutil_core's SEH fault-guard. InvokeResult (the Ok|Faulted|Threw verdict) + Safe (TryInvoke substrate over
          the real il2cpp_runtime_invoke, and the ergonomic Safe.Run(delegate) scope via a reverse-P/Invoke trampoline).
