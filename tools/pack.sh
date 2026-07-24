@@ -34,6 +34,12 @@
 #   PACK_OUT                   output dir       (default: <repo>/dist)
 #   PACK_RID                   publish the CLI tools for this RID (e.g. win-x64); default: portable (no RID)
 #   PACK_SELF_CONTAINED=1      self-contained CLI publish (implies you should set PACK_RID); default: framework-dependent
+#   PACK_BEPINEX_DIR           GAME-FREE mode: an extracted pinned-BepInEx dir (…/BepInEx, core/ inside).
+#                              The committed refstubs (managed/refstubs) stand in for the fixture's
+#                              generated interop proxies, so no .unity-build provisioning (Unity editor,
+#                              ToyGame, first-run) is needed — the CI / consumer path.
+#   PACK_MELONLOADER_DIR       game-free mode: a MelonLoader dir (net6/ inside); the pinned v0.7.3 zip is
+#                              self-fetched (cached under $INUTIL_UNITY_DIR/dl) when unset.
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/wine/env.sh"   # REPO_ROOT, INUTIL_UNITY_DIR, mingw_gcc
 
@@ -51,19 +57,45 @@ dirty_note=""; [ "$dirty" = true ] && dirty_note=" (dirty)"   # $dirty is the ST
 out="${PACK_OUT:-$REPO_ROOT/dist}/$version"
 echo ">> packing inutil bundle  version=$version  (git $git_short$dirty_note)"
 
-# --- preflight: build inputs must be provisioned -----------------------------------------------------
-bep="$INUTIL_UNITY_DIR/loaders/bepinex/BepInEx"
-mel="$INUTIL_UNITY_DIR/loaders/melonloader/MelonLoader"
-[ -f "$bep/core/Il2CppInterop.Runtime.dll" ] || { echo "!! BepInEx build refs missing at $bep — run 'setup-bepinex' first" >&2; exit 1; }
-[ -f "$mel/net6/MelonLoader.dll" ]           || { echo "!! MelonLoader build refs missing at $mel — run 'setup-melon' first" >&2; exit 1; }
+# --- build refs: the provisioned fixture (default) or GAME-FREE (PACK_BEPINEX_DIR + refstubs) --------
+# Game-free mode: the committed refstubs stand in for the fixture's generated interop proxies
+# (managed/refstubs/README.md), the pinned BepInEx zip provides the loader core, and MelonLoader's net6
+# refs need no first-run — so the bundle builds from a bare checkout (CI / consumer path). The fixture
+# path stays canonical for the validate harness (real generated interop, ToyGame).
+refargs=()
+if [ -n "${PACK_BEPINEX_DIR:-}" ]; then
+  bep="$PACK_BEPINEX_DIR"
+  [ -f "$bep/core/Il2CppInterop.Runtime.dll" ] || { echo "!! PACK_BEPINEX_DIR has no core/Il2CppInterop.Runtime.dll ($bep)" >&2; exit 1; }
+  mel="${PACK_MELONLOADER_DIR:-}"
+  if [ -z "$mel" ]; then
+    mel="$INUTIL_UNITY_DIR/dl/MelonLoader"
+    if [ ! -f "$mel/net6/MelonLoader.dll" ]; then
+      echo ">> fetching pinned MelonLoader v0.7.3 (net6 build refs; no first-run needed)"
+      mkdir -p "$(dirname "$mel")"
+      curl -fSL --retry 3 -o "$mel.zip" "https://github.com/LavaGang/MelonLoader/releases/download/v0.7.3/MelonLoader.x64.zip"
+      unzip -o -q "$mel.zip" -d "$(dirname "$mel")"
+    fi
+  fi
+  [ -f "$mel/net6/MelonLoader.dll" ] || { echo "!! MelonLoader net6 refs missing at $mel" >&2; exit 1; }
+  stubs="${PACK_OUT:-$REPO_ROOT/dist}/.refstubs"
+  echo ">> [0/5] refstubs (game-free compile refs)"
+  dotnet build "$REPO_ROOT/managed/refstubs/Il2Cppmscorlib"          -c Release -v q --nologo -p:BepInExDir="$bep" -o "$stubs"
+  dotnet build "$REPO_ROOT/managed/refstubs/UnityEngine.CoreModule"  -c Release -v q --nologo -p:BepInExDir="$bep" -p:Il2CppmscorlibStub="$stubs/Il2Cppmscorlib.dll" -o "$stubs"
+  refargs=( -p:BepInExDir="$bep" -p:MelonDir="$mel" -p:RefStubs=true -p:RefStubsDir="$stubs" )
+else
+  bep="$INUTIL_UNITY_DIR/loaders/bepinex/BepInEx"
+  mel="$INUTIL_UNITY_DIR/loaders/melonloader/MelonLoader"
+  [ -f "$bep/core/Il2CppInterop.Runtime.dll" ] || { echo "!! BepInEx build refs missing at $bep — run 'setup-bepinex' first (or set PACK_BEPINEX_DIR for the game-free refstubs build)" >&2; exit 1; }
+  [ -f "$mel/net6/MelonLoader.dll" ]           || { echo "!! MelonLoader build refs missing at $mel — run 'setup-melon' first" >&2; exit 1; }
+fi
 
 # --- 1. build the SHARED engine ONCE (loader-invariant) ---------------------------------------------
 # Inutil.dll (+Inutil.Schema.dll) is the runtime SDK; Inutil.Mods.dll drags the Roslyn closure (the no-build
 # .cs host + REPL). Built against the BepInEx tree; the Il2CppInterop identity these bind is the SAME assembly
 # MelonLoader loads, so one build serves both loaders (Private=false — identity bound at load, never shipped).
 echo ">> [1/5] shared engine (Inutil + Inutil.Mods + Roslyn closure)"
-dotnet build "$mg/Inutil/Inutil.csproj"           -c Release -v q --nologo
-dotnet build "$mg/Inutil.Mods/Inutil.Mods.csproj" -c Release -v q --nologo
+dotnet build "$mg/Inutil/Inutil.csproj"           -c Release -v q --nologo "${refargs[@]}"
+dotnet build "$mg/Inutil.Mods/Inutil.Mods.csproj" -c Release -v q --nologo "${refargs[@]}"
 sdk_bin="$mg/Inutil/bin/Release"
 mods_bin="$mg/Inutil.Mods/bin/Release"
 [ -f "$sdk_bin/Inutil.dll" ] && [ -f "$sdk_bin/Inutil.Schema.dll" ] || { echo "!! shared engine build produced no Inutil.dll/Inutil.Schema.dll" >&2; exit 1; }
@@ -71,12 +103,12 @@ ls "$mods_bin"/Microsoft.CodeAnalysis*.dll >/dev/null 2>&1 || { echo "!! Inutil.
 
 # --- 2. build the two thin loader hosts + the BepInEx preloader patcher -----------------------------
 echo ">> [2/5] loader hosts (Inutil.BepInEx + Inutil.MelonLoader) + preloader patcher"
-dotnet build "$mg/Inutil.BepInEx/Inutil.BepInEx.csproj"         -c Release -v q --nologo -p:Loader=BepInEx
-dotnet build "$mg/Inutil.MelonLoader/Inutil.MelonLoader.csproj" -c Release -v q --nologo -p:Loader=MelonLoader
-dotnet build "$mg/Inutil.BepInEx.Patcher/Inutil.BepInEx.Patcher.csproj" -c Release -v q --nologo
+dotnet build "$mg/Inutil.BepInEx/Inutil.BepInEx.csproj"         -c Release -v q --nologo -p:Loader=BepInEx "${refargs[@]}"
+dotnet build "$mg/Inutil.MelonLoader/Inutil.MelonLoader.csproj" -c Release -v q --nologo -p:Loader=MelonLoader "${refargs[@]}"
+dotnet build "$mg/Inutil.BepInEx.Patcher/Inutil.BepInEx.Patcher.csproj" -c Release -v q --nologo "${refargs[@]}"
 # Inutil.InteropPatch.dll (net6) backs the host plugin's phase-2 disk persist (Private=false ref — deployed
 # here, beside the host, exactly like the SDK).
-dotnet build "$mg/Inutil.InteropPatch/Inutil.InteropPatch.csproj" -c Release -v q --nologo -f net6.0
+dotnet build "$mg/Inutil.InteropPatch/Inutil.InteropPatch.csproj" -c Release -v q --nologo -f net6.0 "${refargs[@]}"
 bep_host="$mg/Inutil.BepInEx/bin/Release/Inutil.BepInEx.dll"
 mel_host="$mg/Inutil.MelonLoader/bin/Release/Inutil.MelonLoader.dll"
 bep_patcher="$mg/Inutil.BepInEx.Patcher/bin/Release/Inutil.BepInEx.Patcher.dll"
@@ -129,8 +161,8 @@ echo ">> [5/5] publishing CLI tools (inutil-interoppatch + inutil-metadata-extra
 pub_args=( -c Release -v q --nologo )
 [ -n "${PACK_RID:-}" ] && pub_args+=( -r "$PACK_RID" )
 if [ "${PACK_SELF_CONTAINED:-0}" = 1 ]; then pub_args+=( --self-contained true ); else pub_args+=( --self-contained false ); fi
-dotnet publish "$mg/Inutil.InteropPatch.Cli/Inutil.InteropPatch.Cli.csproj" "${pub_args[@]}" -o "$out/tools/inutil-interoppatch"
-dotnet publish "$mg/Inutil.Metadata.Cli/Inutil.Metadata.Cli.csproj"         "${pub_args[@]}" -o "$out/tools/inutil-metadata-extract"
+dotnet publish "$mg/Inutil.InteropPatch.Cli/Inutil.InteropPatch.Cli.csproj" "${pub_args[@]}" "${refargs[@]}" -o "$out/tools/inutil-interoppatch"
+dotnet publish "$mg/Inutil.Metadata.Cli/Inutil.Metadata.Cli.csproj"         "${pub_args[@]}" "${refargs[@]}" -o "$out/tools/inutil-metadata-extract"
 [ -f "$out/tools/inutil-interoppatch/inutil-interoppatch.dll" ] || { echo "!! interoppatch publish produced no entry dll" >&2; exit 1; }
 
 # --- manifest.json + MARKER (the consumption contract, machine + human readable) --------------------

@@ -16,8 +16,9 @@ only, never deployed or shipped.
 
 Build the engine game-free with `-p:RefStubs=true -p:RefStubsDir=<built stubs dir>`: the interop
 `Reference` items in `Inutil.csproj` / `Inutil.BepInEx.csproj` then swap to the stubs, while the
-Il2CppInterop **core** stays the loader's real one (game-free, from the pinned BepInEx zip). The
-OpenTarkov engine repo's `pack.sh` uses this to build the shipped Engine tier with no booted overlay;
+Il2CppInterop **core** stays the loader's real one (game-free, from the pinned BepInEx zip).
+`tools/pack.sh` invokes this itself via its game-free mode (`PACK_BEPINEX_DIR=<extracted zip>/BepInEx`),
+which is how consumers (e.g. OpenTarkov) build the bundle in CI with no provisioned fixture;
 `-p:RefStubs` flows through ProjectReferences, so building `Inutil.Mods`/`Inutil.BepInEx` in stub mode
 rebuilds `Inutil` consistently.
 
