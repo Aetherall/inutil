@@ -33,6 +33,7 @@
     <Compile Include="ReplServer.cs" />
     <Compile Include="ReplHttpServer.cs" />
     <Compile Include="ReplMcpServer.cs" />
+    <Compile Include="ReplAutoStart.cs" />
   </ItemGroup>
 
   <!-- The SDK: ModContext (collectible ALC), Mods.Discover, MainThread — the primitives the host drives. -->

@@ -64,6 +64,8 @@ public sealed class InutilMelonMod : MelonMod
         ModLibs.LoadSync(libsDir, refDirs, MelonLogger.Msg);
         Coremods.LoadSync(Path.Combine(ml, "inutil-coremods"), refDirs, MelonLogger.Msg);
         CsModHost.Start(Path.Combine(ml, "inutil-mods"), refDirs, MelonLogger.Msg);
+        // Env-driven REPL faces — same call + env contract as the BepInEx host (see ReplAutoStart).
+        Inutil.Repl.ReplAutoStart.FromEnvironment(MelonLogger.Msg);
     }
 }
 #endif

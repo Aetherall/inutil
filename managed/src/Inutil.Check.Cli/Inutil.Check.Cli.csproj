@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- inutil-check — the offline dev-check CLI, shipped in the bundle tools/ beside inutil-interoppatch.
+       Verbs (see Program.cs):
+         check <bepDir> <modDir> [asmName]     compile a mod's .cs via the TARGET TREE's own CsModCompiler
+                                               (late-binds plugins/Inutil.Mods.dll — the exact engine build
+                                               + Roslyn closure the in-game host loads, so an offline check
+                                               and the hot-reload loop cannot drift)
+         query <interopDir> <Type> [max]       Cecil reverse-index one type (ctors/producers/consumers)
+         methods <interopDir> <Type> [max]     the type's OWN declared surface (the Hook<T> spelling)
+         dump  <interopDir> <outPath>          write the whole greppable catalog
+
+       net8 console, framework-dependent. NO Roslyn of its own: LoadFrom probing resolves everything from
+       the checked tree's plugins/. Cecil is the only package (pure-metadata reads of the interop proxies). -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>inutil-check</AssemblyName>
+    <RootNamespace>Inutil.Check</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Mono.Cecil" Version="0.11.5" />
+  </ItemGroup>
+
+</Project>

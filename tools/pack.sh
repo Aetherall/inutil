@@ -16,6 +16,8 @@
 #     melonloader/Mods/           the MelonLoader host tree — copy wholesale into a MelonLoader install
 #     tools/inutil-interoppatch/  the OFFLINE proxy patcher (the manual/dev deployment-time interface)
 #     tools/inutil-metadata-extract/  the opt-in wire-map extractor (Cpp2IL closure; only WireMap consumers need it)
+#     tools/inutil-check/         the offline dev-check CLI (compile a mod via the target's own CsModCompiler;
+#                                 Cecil reverse-index/methods/dump over its interop proxies)
 #     manifest.json               machine-readable: version, git identity, per-loader file->deploy map, tools
 #     MARKER                      human-readable identity stamp
 #
@@ -163,7 +165,9 @@ pub_args=( -c Release -v q --nologo )
 if [ "${PACK_SELF_CONTAINED:-0}" = 1 ]; then pub_args+=( --self-contained true ); else pub_args+=( --self-contained false ); fi
 dotnet publish "$mg/Inutil.InteropPatch.Cli/Inutil.InteropPatch.Cli.csproj" "${pub_args[@]}" "${refargs[@]}" -o "$out/tools/inutil-interoppatch"
 dotnet publish "$mg/Inutil.Metadata.Cli/Inutil.Metadata.Cli.csproj"         "${pub_args[@]}" "${refargs[@]}" -o "$out/tools/inutil-metadata-extract"
+dotnet publish "$mg/Inutil.Check.Cli/Inutil.Check.Cli.csproj"               "${pub_args[@]}" "${refargs[@]}" -o "$out/tools/inutil-check"
 [ -f "$out/tools/inutil-interoppatch/inutil-interoppatch.dll" ] || { echo "!! interoppatch publish produced no entry dll" >&2; exit 1; }
+[ -f "$out/tools/inutil-check/inutil-check.dll" ] || { echo "!! inutil-check publish produced no entry dll" >&2; exit 1; }
 
 # --- manifest.json + MARKER (the consumption contract, machine + human readable) --------------------
 # The per-loader file lists are DERIVED from what was actually staged (never hand-maintained), so the manifest
@@ -184,7 +188,8 @@ cat > "$out/manifest.json" <<EOF
   },
   "tools": {
     "inutil-interoppatch":     { "path": "tools/inutil-interoppatch",     "entry": "inutil-interoppatch.dll",     "invoke": "inutil-interoppatch --game <gameDir>",     "required": true },
-    "inutil-metadata-extract": { "path": "tools/inutil-metadata-extract", "entry": "inutil-metadata-extract.dll", "invoke": "inutil-metadata-extract --game <gameDir>", "required": false }
+    "inutil-metadata-extract": { "path": "tools/inutil-metadata-extract", "entry": "inutil-metadata-extract.dll", "invoke": "inutil-metadata-extract --game <gameDir>", "required": false },
+    "inutil-check":            { "path": "tools/inutil-check",            "entry": "inutil-check.dll",            "invoke": "inutil-check check <bepDir> <modDir>",     "required": false }
   }
 }
 EOF
@@ -203,4 +208,4 @@ echo ">> packed $out"
 echo "   bepinex/BepInEx/plugins  ($(ls -1 "$bep_deploy" | wc -l)): $(ls -1 "$bep_deploy" | tr '\n' ' ')"
 echo "   bepinex/BepInEx/patchers ($(ls -1 "$bep_patchers" | wc -l)): $(ls -1 "$bep_patchers" | tr '\n' ' ')"
 echo "   melonloader/Mods         ($(ls -1 "$mel_deploy" | wc -l)): $(ls -1 "$mel_deploy" | tr '\n' ' ')"
-echo "   tools: inutil-interoppatch inutil-metadata-extract"
+echo "   tools: inutil-interoppatch inutil-metadata-extract inutil-check"

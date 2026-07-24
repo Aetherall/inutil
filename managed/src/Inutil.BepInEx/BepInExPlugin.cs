@@ -108,6 +108,9 @@ public sealed class BepInExPlugin : BasePlugin
         ModLibs.LoadSync(libsDir, refDirs, m => Log.LogInfo(m));
         Coremods.LoadSync(Path.Combine(bep, "inutil-coremods"), refDirs, m => Log.LogInfo(m));
         CsModHost.Start(Path.Combine(bep, "inutil-mods"), refDirs, m => Log.LogInfo(m));
+        // Env-driven REPL faces (INUTIL_REPL_PORT / INUTIL_MCP_PORT / INUTIL_REPL_NS / INUTIL_REPL_IMPORTS) —
+        // unset = nothing starts. Same call in the MelonLoader host; one env contract, both loaders.
+        Inutil.Repl.ReplAutoStart.FromEnvironment(m => Log.LogInfo(m));
     }
 
     private static UnityEngine.GameObject? _pump;
