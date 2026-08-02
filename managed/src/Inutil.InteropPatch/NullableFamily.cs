@@ -30,6 +30,11 @@ public sealed class NullableFamily : IFamilyPass
 
     // Grouping candidate: a virtual, non-accessor method whose return is a value-type Nullable — broken
     // (Il2CppSystem.Nullable) OR already-flipped (System.Nullable), so a half-patched slot still groups.
+    //
+    // WHY accessors are excluded here (and in IsNonVirtualCandidate): NullableFieldRewriter owns EVERY Nullable
+    // accessor, BOTH backings — field-backed via tail-swap + body rebuild, method-backed via tail-swap + param
+    // flip. This is a hand-off, not a hole: an accessor skipped here IS covered there. Weaken that pass and this
+    // exclusion silently drops members (it did — a method-backed setter deferred, taking its getter with it).
     public static bool IsCandidate(MethodDefinition m)
         => m.IsVirtual && !m.IsGetter && !m.IsSetter
            && (NullableValueElement(m.ReturnType) is not null || NullableRefElement(m.ReturnType) is not null);

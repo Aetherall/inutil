@@ -89,6 +89,17 @@ public sealed class NullableFieldRewriter
             if (!getterOk || !setterOk || (getter is null && setter is null))
             { defers.Add($"{type.FullName}::{prop.Name}  (nullable field -> DEFER: accessor not handleable)"); continue; }
 
+            // STATIC + field-backed setter: the rebuild below is instance-only — it emits `ldarg.0` as `this` and
+            // calls WriteNullableField(Il2CppObjectBase obj, …), but a STATIC setter's arg0 is the VALUE and there is
+            // no object at all (a static il2cpp field needs il2cpp_field_static_set_value, which no helper exposes
+            // yet). Emitting it anyway produced INVALID IL — verified on EFT proxies, where three static setters
+            // (e.g. EFT.AudioUtils::set__cachedDspScheduleLookaheadSec) carry a body that pushes a Nullable<T> where
+            // an Il2CppObjectBase is expected; it would throw InvalidProgramException the moment a mod called one.
+            // Defer LOUDLY instead: a member left unflipped is a known limit, a mis-emitted body is a landmine.
+            // (The METHOD-backed arm is unaffected — ParamFlip.Splice derives the arg index from HasThis.)
+            if (setter is not null && setterFieldInfo is not null && setter.IsStatic)
+            { defers.Add($"{type.FullName}::{prop.Name}  (nullable field -> DEFER: static field-backed setter, no static-field write helper)"); continue; }
+
             // The two derivations of the natural type — this pass's own (targetType, from the property's element) and
             // the resolver's (for the spliced param) — must agree, or getter and setter would flip to different types
             // and the property would be a half-flip that still compiles. Disagreement defers, loudly.

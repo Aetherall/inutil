@@ -116,6 +116,13 @@ public static unsafe class ValueTypeBridge
     // set the raw ctor gets wrong) + hasValue = 1. Returned wrapped as its typed proxy so ParamFlip.Splice's castclass to
     // the il2cpp Nullable param type is a no-op. Fail-loud on a missing field / unresolvable class — never a silent
     // mis-marshal. T : Il2CppObjectBase. (Deployed target of WrapHelpers.NullableRefToIl2CppClosed.)
+    // Returns `object`, NOT Il2CppSystem.Nullable<T>, and that is REQUIRED, not an oversight to tidy up: the
+    // game-agnostic SDK does not hard-bind Il2Cppmscorlib — it resolves Il2CppSystem.* proxies by full name from the
+    // loaded assemblies at runtime (ContainerBridge R1, NullableProxyOf below). Naming the closed proxy in this
+    // signature would put that binding in Inutil.dll's metadata, where the refstub-compiled engine and the game's
+    // generated Il2Cppmscorlib must then agree. Callers pay one castclass — which ParamFlip.Splice already emits for
+    // every `object`-returning converter, so the patched IL is identical either way. A hand-caller casts; that cast
+    // is the price of the invariant, and after the accessor flip lands there are no hand-callers left anyway.
     public static unsafe object RefToNullable<T>(T? value) where T : Il2CppObjectBase
     {
         Type nullableProxyType = ContainerBridge.NullableProxyOf(typeof(T));   // il2cpp Il2CppSystem.Nullable<T> (resolved reflectively)

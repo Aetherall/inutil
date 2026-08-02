@@ -51,9 +51,25 @@ DirectoryPatchResult r = InteropPatcher.PatchDirectory(interopDir, Console.Out);
 
 Console.WriteLine($"\n== patched {r.Patched.Count} DLL(s), {r.TotalFlipped} member(s) flipped; " +
                   $"{r.Unchanged.Count} unchanged, {r.Unreadable.Count} non-.NET ==");
-foreach (var (dll, res) in r.Patched)
-    foreach (string d in res.Defers)
-        Console.WriteLine($"   defer  {dll}: {d}");
+// Every defer, from every module — including ones that flipped nothing (r.Patched holds only the modules that did),
+// which is where a wholly-deferred module used to go silent. GAME modules are printed individually; FRAMEWORK ones
+// (Il2Cppmscorlib, UnityEngine.*) are summarized: they defer in bulk by design, and 59 lines of them is how a single
+// game defer gets missed. The full list is on DirectoryPatchResult.Defers for anything that wants it.
+var gameDefers = r.Defers.Where(x => !CecilProjector.IsFrameworkAssembly(Path.GetFileNameWithoutExtension(x.Dll))).ToList();
+foreach (var (dll, d) in gameDefers)
+    Console.WriteLine($"   defer  {dll}: {d}");
+if (r.Defers.Count > gameDefers.Count)
+    Console.WriteLine($"   defer  ({r.Defers.Count - gameDefers.Count} more in framework proxies — deferred by design)");
+
+// What the patch LEFT behind, whether or not any pass noticed it. Known deferrals are a count; a residual with no
+// known reason is a hole a consumer will hit as a broken Nullable spelling, so it is named individually.
+if (r.Residual.Count > 0)
+{
+    Console.WriteLine($"\n== residual: {r.Residual.Count} member(s) still il2cpp Nullable-typed " +
+                      $"({r.Residual.Count - r.Unexplained.Count} known-deferred, {r.Unexplained.Count} unexplained) ==");
+    foreach (ResidualNullable x in r.Unexplained)
+        Console.WriteLine($"   !! HOLE  {x.Module}: {x.Member}  ({x.Why})");
+}
 
 // Disk-only step: re-attach the recovered wire names onto the proxies. The wiremap (produced offline by the
 // metadata pillar) sits in the interop dir; INUTIL_WIREMAP overrides.
