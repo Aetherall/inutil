@@ -34,16 +34,24 @@ public sealed class ContainerFamily : IFamilyPass
 
     public ContainerFamily(ModuleDefinition module, WrapHelpers wrap) { _module = module; _wrap = wrap; }
 
-    // Grouping candidate: a virtual, non-accessor, non-generic-METHOD whose return is a container this family owns —
-    // an il2cpp List/Dict/Tuple (flippable) OR the already-flipped BCL spelling (a half-patched slot must still group).
-    // Generic METHODS (a `T`-parameterized element) are deferred elsewhere, same as the Task pass.
+    // Grouping candidate: a virtual, non-accessor method whose return is a container this family owns — an il2cpp
+    // List/Dict/Tuple (flippable) OR the already-flipped BCL spelling (a half-patched slot must still group).
+    //
+    // The genericity gate is on the RETURN TYPE, not the method. This read `!m.HasGenericParameters`, and the comment
+    // gave the real reason — "a `T`-parameterized element" has no closed natural type to flip to. But that is a
+    // property of the TYPE, and excluding the whole method also excluded generic methods whose return happens to be
+    // fully closed (EFT.ItemDeserializer::GetProperties<TObject> among them). ContainsGenericParameter states the
+    // actual condition, and it is the same rule ParamFamily applies per param.
     public static bool IsCandidate(MethodDefinition m)
-        => m.IsVirtual && !m.IsGetter && !m.IsSetter && !m.HasGenericParameters && IsContainerReturn(m.ReturnType);
+        => m.IsVirtual && !m.IsGetter && !m.IsSetter && Returns(m);
 
     // The NON-virtual counterpart (simpler — no override graph, so no planner / lockstep). Same shape gate;
     // PlanMember/Apply are shared, so the two paths convert through ONE implementation (no drift).
     public static bool IsNonVirtualCandidate(MethodDefinition m)
-        => !m.IsVirtual && !m.IsGetter && !m.IsSetter && !m.HasGenericParameters && IsContainerReturn(m.ReturnType);
+        => !m.IsVirtual && !m.IsGetter && !m.IsSetter && Returns(m);
+
+    static bool Returns(MethodDefinition m)
+        => !m.ReturnType.ContainsGenericParameter && IsContainerReturn(m.ReturnType);
 
     // Is `rt` a container return this family owns — either the il2cpp List/Dict/Tuple WRITE-TARGET spelling, or the
     // already-flipped BCL spelling? Only the OUTER shape is decided here (candidacy); whether the ELEMENTS can be made

@@ -43,8 +43,11 @@ public sealed class NullableFamily : IFamilyPass
     // OR ref-bearing il2cpp Nullable return. Already-flipped forms are excluded (nothing to do -> idempotent): a flipped
     // value return is System.Nullable (IsIl2CppNullable false), a flipped ref return is the bare proxy (no longer a
     // Nullable at all, so NullableRefElement misses it).
+    // The genericity gate is on the RETURN TYPE, not the method — a return mentioning a generic parameter has no
+    // closed natural type, but a generic method returning a fully closed Nullable does. Same rule as ParamFamily's
+    // per-param gate and ContainerFamily's per-return one.
     public static bool IsNonVirtualCandidate(MethodDefinition m)
-        => !m.IsVirtual && !m.IsGetter && !m.IsSetter && !m.HasGenericParameters && m.HasBody
+        => !m.IsVirtual && !m.IsGetter && !m.IsSetter && !m.ReturnType.ContainsGenericParameter && m.HasBody
            && (IsIl2CppNullable(m.ReturnType) || NullableRefElement(m.ReturnType) is not null);
 
     // The underlying value type of a value-type Nullable return — either spelling (Il2CppSystem.Nullable<Vec3> or the

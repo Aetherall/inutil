@@ -41,6 +41,21 @@ public static class ResidualAudit
         if (CecilProjector.IsFrameworkAssembly(module.Assembly.Name.Name)) return found;
 
         string mod = module.Assembly.Name.Name;
+        // The param pass's OWN collision predicate, not a copy of it. A param flip changes the signature, so a member
+        // whose post-flip signature already exists as a sibling overload is deferred — and that deferral was reported
+        // by the pass while this audit called it "NO KNOWN DEFERRAL REASON", because the reason list here is
+        // hand-maintained and did not know about it. Asking ParamFamily directly means the audit cannot fall behind
+        // the pass again: change the collision rule and both move together.
+        var paramFamily = new ParamFamily(module, new WrapHelpers(module));
+        var projector = new CecilProjector();
+
+        bool ParamDeferredByCollision(MethodDefinition m)
+        {
+            var cm = (CecilSlotMethod)projector.Method(m);
+            MemberOutcome outcome = paramFamily.PlanMember(cm);
+            return outcome.Kind == MemberOutcomeKind.Flip && paramFamily.CollidesWithSibling(cm, outcome.Payload!);
+        }
+
         foreach (TypeDefinition type in module.GetTypes())
         {
             foreach (FieldDefinition f in type.Fields)
@@ -69,7 +84,8 @@ public static class ResidualAudit
 
                 foreach (ParameterDefinition p in m.Parameters)
                     if (Naturalizable(module, p.ParameterType) is { } ak)
-                        found.Add(Classify(mod, $"{sig} (param '{p.Name}')", p.ParameterType, m.IsVirtual, $"{ak} param"));
+                        found.Add(Classify(mod, $"{sig} (param '{p.Name}')", p.ParameterType, m.IsVirtual, $"{ak} param",
+                                           paramCollision: ParamDeferredByCollision(m)));
             }
         }
         return found;
@@ -88,7 +104,7 @@ public static class ResidualAudit
     // Attribute a residual to a KNOWN deferral, or mark it unexplained. This list is the audit's one hand-maintained
     // seam: a guardrail removed from a pass must be removed here too, or a real hole starts reading as expected.
     static Residual Classify(string module, string member, TypeReference type, bool virt, string kind,
-                             bool staticFieldBackedSetter = false)
+                             bool staticFieldBackedSetter = false, bool paramCollision = false)
     {
         TypeReference? elem = (type as GenericInstanceType)?.GenericArguments.FirstOrDefault();
         // NB — this arm is now COARSE. Virtual Nullable RETURNS and virtual Nullable ACCESSORS both flip in lockstep
@@ -101,6 +117,8 @@ public static class ResidualAudit
             return new(module, member, $"{kind}: virtual — expected only if its slot root is external/framework; verify", false);
         if (staticFieldBackedSetter)
             return new(module, member, $"{kind}: static field-backed setter — deferred, no static-field write helper", false);
+        if (paramCollision)
+            return new(module, member, $"{kind}: flipping would collide with an existing sibling overload — deferred by the pass", false);
         if (elem is not null && elem.IsGenericParameter)
             return new(module, member, $"{kind}: open-generic element <{elem.Name}> — not a concrete type to flip", false);
         return new(module, member, $"{kind}: NO KNOWN DEFERRAL REASON — a pass should have covered this", true);

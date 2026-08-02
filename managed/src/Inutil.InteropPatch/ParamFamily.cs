@@ -26,14 +26,28 @@ public sealed class ParamFamily : IFamilyPass
 
     public ParamFamily(ModuleDefinition module, WrapHelpers wrap) { _module = module; _wrap = wrap; }
 
-    // Grouping candidate: a virtual, non-accessor, non-generic-METHOD with a body and at least one param whose il2cpp
-    // SHAPE is flippable. The non-virtual twin is the same sans IsVirtual. Shape is a superset of Resolve; PlanMember
-    // does the real resolve and a member with no actually-resolvable param becomes a no-op (never a defer).
+    // Grouping candidate: a virtual, non-accessor method with a body and at least one FLIPPABLE param. The non-virtual
+    // twin is the same sans IsVirtual. Shape is a superset of Resolve; PlanMember does the real resolve and a member
+    // with no actually-resolvable param becomes a no-op (never a defer).
     public static bool IsCandidate(MethodDefinition m) => Base(m) && m.IsVirtual;
     public static bool IsNonVirtualCandidate(MethodDefinition m) => Base(m) && !m.IsVirtual;
     static bool Base(MethodDefinition m)
-        => !m.IsGetter && !m.IsSetter && !m.HasGenericParameters && m.HasBody
-           && m.Parameters.Any(p => ParamFlipResolver.IsFlippableShape(p.ParameterType));
+        => !m.IsGetter && !m.IsSetter && m.HasBody && m.Parameters.Any(Flippable);
+
+    // The genericity gate belongs to the PARAM, not to the method.
+    //
+    // This used to read `!m.HasGenericParameters` — excluding every generic method outright. That is the wrong unit:
+    // `AddEffect<TEffect>(EBodyPart, Nullable<float> delayTime, …, Action<TEffect> initCallback)` has four params
+    // whose natural type (`float?`) has nothing whatever to do with TEffect, and one that does. Excluding the method
+    // left all five raw — 23 of the 34 unexplained residuals in one real game were exactly this, and they were
+    // invisible rather than deferred: not being candidates, no pass ever named them.
+    //
+    // What actually cannot be flipped is a param whose type MENTIONS a generic parameter (the method's or its
+    // declaring type's) — there is no closed natural type to convert to, and the spliced converter would have to be
+    // built per instantiation. Cecil answers that directly, so the rule is stated once, here, and both the candidacy
+    // gate and PlanMember read it.
+    static bool Flippable(ParameterDefinition p)
+        => !p.ParameterType.ContainsGenericParameter && ParamFlipResolver.IsFlippableShape(p.ParameterType);
 
     // Classify ONE member's params -> its own set of flips. Derived PER MEMBER (from md.Parameters), never from the
     // slot root — the structural guarantee against a root-derived half-flip. A member with no actually-resolvable param
@@ -44,8 +58,13 @@ public sealed class ParamFamily : IFamilyPass
         MethodDefinition md = ((CecilSlotMethod)member).Definition;
         var items = new List<ParamFlipItem>();
         for (int i = 0; i < md.Parameters.Count; i++)
+        {
+            // Same gate as candidacy — a param mentioning a generic parameter has no closed natural type. Stated via
+            // Flippable so the two can never drift into disagreeing about which params a member owns.
+            if (!Flippable(md.Parameters[i])) continue;
             if (ParamFlipResolver.Resolve(_module, _wrap, md.Parameters[i].ParameterType) is { } f)
                 items.Add(new ParamFlipItem(i, f.natural, f.converter));
+        }
         return items.Count > 0 ? MemberOutcome.Flip(new ParamFlipPlan(items)) : MemberOutcome.AlreadyFlipped();
     }
 
