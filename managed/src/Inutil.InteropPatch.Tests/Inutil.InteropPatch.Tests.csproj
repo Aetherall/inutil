@@ -17,6 +17,10 @@
 
   <ItemGroup>
     <ProjectReference Include="../Inutil.InteropPatch/Inutil.InteropPatch.csproj" />
+    <!-- The check CLI's author-facing surface renderer is covered here rather than in a suite of its own: this
+         is the only offline suite that already holds REAL, PRISTINE proxies, and the rendering invariant is only
+         meaningful against real il2cpp spellings. -->
+    <ProjectReference Include="../Inutil.Check.Cli/Inutil.Check.Cli.csproj" />
   </ItemGroup>
 
 </Project>

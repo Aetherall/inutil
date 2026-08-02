@@ -9,8 +9,36 @@ namespace Inutil.Check;
 
 internal static class Naming
 {
+    // TWO renderings, for two consumers that want opposite things. Keeping them apart is the whole point:
+    //
+    //   CleanTypeName  — the INDEX KEY. il2cpp-shaped, matching il2cpp_type_get_name, so a reference files
+    //                    under the same key however Il2CppInterop happened to spell it. Lossy ON PURPOSE.
+    //   AuthorTypeName — what a C# mod must literally WRITE. Lossless: no BCL remap, no wrapper collapse.
+    //
+    // They were one function until a real consumer was misled by it. CleanTypeName renders an UNFLIPPED
+    // `Il2CppSystem.Nullable<MongoID>` as `System.Nullable<MongoID>` and an UNFLIPPED `Il2CppArrayBase<T>`
+    // as `T[]` — i.e. identically to their flipped forms. So the one question the `methods`/`query` output
+    // is consulted for ("can I assign this naturally?") was answered wrong, in the confident direction, for
+    // exactly the members where the answer is no. Author-facing output must use AuthorTypeName.
+    public static string AuthorTypeName(TypeReference t)
+    {
+        if (t.IsArray) return AuthorTypeName(((ArrayType)t).ElementType) + "[]";
+        if (t is GenericInstanceType gi)
+            return StripArity(gi.ElementType.FullName.Replace('/', '.')) + "<" +
+                   string.Join(",", gi.GenericArguments.Select(AuthorTypeName)) + ">";
+        return t.FullName.Replace('/', '.');
+    }
+
+    // Is this type still wearing an il2cpp spelling a mod cannot assign naturally?
+    //
+    // Phrased as "do the two renderings DISAGREE", not as a list of known wrappers. CleanTypeName is exactly
+    // the set of il2cpp-isms we paper over, so any spelling it collapses is one an author must be warned
+    // about — including a wrapper family added to it later, with no edit here.
+    public static bool IsRawIl2Cpp(TypeReference? t)
+        => t is not null && !string.Equals(AuthorTypeName(t), CleanTypeName(t), StringComparison.Ordinal);
+
     // Display name for a type reference: arrays as "T[]", closed generics as "Outer<A,B>", Il2CppSystem.*
-    // mapped back to System.*. NOT for emitted C# — purely the mod-facing display key the index files under.
+    // mapped back to System.*. NOT for emitted C# and NOT author-facing — purely the index key.
     public static string CleanTypeName(TypeReference t)
     {
         if (t.IsArray) return CleanTypeName(((ArrayType)t).ElementType) + "[]";

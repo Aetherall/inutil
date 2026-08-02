@@ -71,7 +71,7 @@ internal static class ReverseIndex
                     if (m.IsConstructor)
                     {
                         if (IsPlumbingCtor(m)) continue;
-                        string sig = $"new {decl}({RenderParams(m)})";
+                        string sig = $"new {decl}({RenderParams(m)}){Raw(m.Parameters.Select(p => (TypeReference?)p.ParameterType).ToArray())}";
                         foreach (var k in Rollup(t, rollupCache)) Add(ix.Ctors, k, sig);
                         // a ctor that takes a P is itself a consumer of P (you'd pass your P into that same New)
                         string csig = $"{decl}..ctor({RenderParams(m)})";
@@ -87,12 +87,12 @@ internal static class ReverseIndex
                     string stat = m.IsStatic ? "  [static]" : "";
                     if (m.ReturnType != null && m.ReturnType.FullName != "System.Void")
                     {
-                        string sig = $"{decl}.{m.Name}({RenderParams(m)}) : {Naming.CleanTypeName(m.ReturnType)}{stat}";
+                        string sig = $"{decl}.{m.Name}({RenderParams(m)}) : {Naming.AuthorTypeName(m.ReturnType)}{stat}{RawSig(m)}";
                         foreach (var k in Rollup(m.ReturnType, rollupCache)) Add(ix.ProducersReturn, k, sig);
                     }
                     if (m.HasParameters)
                     {
-                        string sig = $"{decl}.{m.Name}({RenderParams(m)}){stat}";
+                        string sig = $"{decl}.{m.Name}({RenderParams(m)}){stat}{RawSig(m)}";
                         foreach (var p in m.Parameters)
                             foreach (var k in Rollup(p.ParameterType, rollupCache)) Add(ix.Consumers, k, sig);
                     }
@@ -106,14 +106,14 @@ internal static class ReverseIndex
                     bool g = p.GetMethod != null, s = p.SetMethod != null;
                     bool st = (p.GetMethod ?? p.SetMethod)?.IsStatic == true;
                     string acc = "{" + (g ? "get;" : "") + (s ? "set;" : "") + "}";
-                    string sig = $"{decl}.{p.Name} : {Naming.CleanTypeName(p.PropertyType)}  [prop {acc}{(st ? " static" : "")}]";
+                    string sig = $"{decl}.{p.Name} : {Naming.AuthorTypeName(p.PropertyType)}  [prop {acc}{(st ? " static" : "")}]{Raw(p.PropertyType)}";
                     foreach (var k in Rollup(p.PropertyType, rollupCache)) Add(ix.ProducersHeld, k, sig);
                 }
 
                 foreach (var f in t.Fields)
                 {
                     if (IsPlumbingField(f, t)) continue;
-                    string sig = $"{decl}.{f.Name} : {Naming.CleanTypeName(f.FieldType)}  [field{(f.IsStatic ? " static" : "")}]";
+                    string sig = $"{decl}.{f.Name} : {Naming.AuthorTypeName(f.FieldType)}  [field{(f.IsStatic ? " static" : "")}]{Raw(f.FieldType)}";
                     foreach (var k in Rollup(f.FieldType, rollupCache)) Add(ix.ProducersHeld, k, sig);
                 }
             }
@@ -191,12 +191,23 @@ internal static class ReverseIndex
         return false;
     }
 
+    // Author-facing: what a mod must literally spell. NOT CleanTypeName — see Naming.AuthorTypeName for why
+    // the index key and the author signature have to be different renderings.
     private static string RenderParams(MethodDefinition m) =>
         string.Join(", ", m.Parameters.Select(p =>
         {
-            string ty = Naming.CleanTypeName(p.ParameterType);
+            string ty = Naming.AuthorTypeName(p.ParameterType);
             return string.IsNullOrEmpty(p.Name) ? ty : ty + " " + p.Name;
         }));
+
+    // Flag a member whose signature still carries an il2cpp spelling — the reader's cue that natural typing
+    // does NOT reach it (a `Il2CppSystem.Nullable<T>` won't take a T, a `Il2CppArrayBase<T>` won't take a T[]).
+    private const string RawTag = "  [raw il2cpp]";
+
+    private static string Raw(params TypeReference?[] types) => types.Any(Naming.IsRawIl2Cpp) ? RawTag : "";
+
+    private static string RawSig(MethodDefinition m) =>
+        Raw(m.Parameters.Select(p => (TypeReference?)p.ParameterType).Append(m.ReturnType).ToArray());
 
     private static void Add(Dictionary<string, List<string>> map, string key, string val)
     {
@@ -322,11 +333,17 @@ internal static class ReverseIndex
             else if (m.Name.StartsWith("op_", StringComparison.Ordinal)) tags += "  [operator]";
             if (m.IsAbstract) tags += "  [abstract]"; else if (m.IsVirtual) tags += "  [virtual]";
             string ret = m.ReturnType is null || m.ReturnType.FullName == "System.Void"
-                ? "" : $" : {Naming.CleanTypeName(m.ReturnType)}";
-            methods.Add($"{m.Name}({RenderParams(m)}){ret}{tags}");
+                ? "" : $" : {Naming.AuthorTypeName(m.ReturnType)}";
+            methods.Add($"{m.Name}({RenderParams(m)}){ret}{tags}{RawSig(m)}");
         }
         Section(sb, "declared methods (hook spelling: name + parameter types)", methods, max);
         Section(sb, "ctors", ctors, max);
+        // Only when it applies — a legend on every type would train the reader to skip it.
+        if (methods.Concat(ctors).Any(s => s.Contains(RawTag, StringComparison.Ordinal)))
+            sb.Append("   [raw il2cpp] = this signature still wears an il2cpp type; natural typing does NOT reach it\n")
+              .Append("                 (an Il2CppSystem.Nullable<T> will not take a T). If it survives a FRESH\n")
+              .Append("                 inutil-interoppatch it is either a by-design refusal (read-only spellings\n")
+              .Append("                 like IReadOnlyList<T>, see docs/reference/limits.md) or a real gap.\n");
         return new SurfaceResult { Text = sb.ToString(), Status = "ok", Resolved = decl, Methods = methods.Count };
     }
 

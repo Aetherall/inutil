@@ -57,6 +57,11 @@ if (ContentMarker.ReadHash(interopDir, SchemaMarker.InteropMarkerFileName) is { 
     return 2;
 }
 
+// The author-facing surface renderer, over these same PRISTINE proxies — the only place real il2cpp spellings
+// exist offline, and the state in which "does the tool tell an author the truth about this member" is meaningful.
+Console.WriteLine(">> author-facing surface rendering (inutil-check methods/query must not hide il2cpp spellings)");
+offlineFailures += SurfaceRenderingTests.Run(interopDir);
+
 int failures = offlineFailures;   // fold the offline verdict into the overall tally
 void Check(string name, bool ok, string? detail = null)
 {
