@@ -61,6 +61,156 @@ public static class Json
     public static T? To<T>(JsonNode? node) where T : Il2CppObjectBase
         => node is null ? null : To<T>(node.ToJsonString());
 
+    // ── SHAPE: build wire JSON from a plain C# object, CHECKED against the target's recovered wire members ──────
+    //
+    // `To<T>(new { areaType = 4, continuous = true })` reads like it is bound to T. It is not — anonymous-object
+    // keys are just identifiers, so a typo (`areaTyp`, `AreaType`, `area_type`) compiles, serializes, deserializes,
+    // and leaves that member at its DEFAULT. Silently. That is strictly worse than a JSON string, which at least
+    // announces it is untyped wire data. So this seam only exists WITH the check: every key must resolve to a wire
+    // member of the target, or the call fails loud naming the near-miss.
+    //
+    // The member list is WireMember.Recovered — the SAME list Wire.Serialize writes from (the [JsonPropertyName]s
+    // InteropPatch re-attached from the recovered wiremap), so the write direction cannot drift from the read one
+    // and there is no second source of truth to keep in sync.
+    //
+    // Values are coerced to each member's DECLARED type, which closes the other silent-failure route: a double
+    // literal landing in an int-declared member makes a strict reader throw MID-GRAPH, aborting the whole enclosing
+    // object rather than the leaf (a real, measured failure shape).
+    //
+    // NOT solved here, deliberately: a polymorphic member whose concrete subtype is picked by a converter that only
+    // engages on the BASE static type. No spelling of the outer object fixes that — deserialize such elements AS
+    // their concrete subtype (To<TConcrete>(elementJson)) and assign them.
+
+    /// <summary>Build wire JSON from a plain C# object (typically an anonymous type), with every key CHECKED against
+    /// <paramref name="target"/>'s recovered wire members and every value coerced to the member's declared type.
+    /// Throws naming the offender (and the closest known member) on an unknown key.</summary>
+    public static JsonNode ToNode(Type target, object shape)
+    {
+        if (target is null) throw new ArgumentNullException(nameof(target));
+        if (shape is null) throw new ArgumentNullException(nameof(shape));
+        if (shape is JsonNode node) return node;                      // already a DOM — nothing to check or coerce
+
+        WireMember[] members = WireMember.Recovered(target);
+        if (members.Length == 0)
+            throw new InvalidOperationException(
+                $"Inutil.Json.ToNode({target.FullName}): the type carries no recovered wire members, so no key could " +
+                "be checked. Either the interop is unpatched (run inutil-interoppatch) or this type is absent from " +
+                "the wiremap — build it with a JSON string/JsonNode instead of a checked shape.");
+
+        var byWire = new System.Collections.Generic.Dictionary<string, WireMember>(StringComparer.Ordinal);
+        foreach (WireMember m in members) byWire[m.Wire] = m;
+
+        var obj = new JsonObject();
+        foreach (System.Reflection.PropertyInfo p in shape.GetType()
+                     .GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
+        {
+            if (!byWire.TryGetValue(p.Name, out WireMember member))
+                throw new InvalidOperationException(
+                    $"Inutil.Json.ToNode({target.FullName}): unknown wire member '{p.Name}'." +
+                    Suggest(p.Name, byWire.Keys) +
+                    $"\n  Known members: {string.Join(", ", byWire.Keys)}");
+
+            obj[p.Name] = Coerce(p.GetValue(shape), member.Declared, target, p.Name);
+        }
+        return obj;
+    }
+
+    /// <summary>Generic twin of <see cref="ToNode(Type, object)"/>.</summary>
+    public static JsonNode ToNode<T>(object shape) where T : Il2CppObjectBase => ToNode(typeof(T), shape);
+
+    /// <summary>Deserialize a CHECKED C# shape into the il2cpp type T through the game's converters — the
+    /// object-literal twin of <see cref="To{T}(string)"/>. Every key is validated against T's recovered wire members
+    /// and every value coerced to its declared type BEFORE the game's deserializer sees it, so a misspelled member
+    /// is a loud failure at the call site instead of a silent default. A string or JsonNode is passed straight
+    /// through to the matching overload (nothing to check).</summary>
+    public static T? To<T>(object shape) where T : Il2CppObjectBase
+        => shape switch
+        {
+            null => throw new ArgumentNullException(nameof(shape)),
+            string s => To<T>(s),
+            JsonNode n => To<T>(n),
+            _ => To<T>(ToNode(typeof(T), shape)),
+        };
+
+    // Coerce one supplied value to the member's DECLARED type. The numeric arm is the point: Convert to the
+    // declared numeric type so an int-declared member gets `3600`, never `3600.0`.
+    static JsonNode? Coerce(object? value, Type declared, Type target, string wireName)
+    {
+        if (value is null) return null;
+        if (value is JsonNode node) return node;                       // explicit DOM escape hatch
+
+        Type t = Nullable.GetUnderlyingType(declared) ?? declared;
+
+        // An enum VALUE is written as its underlying NUMBER, not its name: a numeric enum is accepted by every
+        // reader, whereas a name needs a string-enum converter the game may not register. Pass a string explicitly
+        // if the wire wants the name.
+        if (value is Enum e) return JsonValue.Create(Convert.ToInt64(e));
+
+        if (value is string or bool) return JsonValue.Create(value);
+
+        if (IsNumeric(t) && IsNumeric(value.GetType()))
+        {
+            object converted = Convert.ChangeType(value, t, System.Globalization.CultureInfo.InvariantCulture);
+            return JsonValue.Create(converted);
+        }
+
+        // A nested shape whose declared type ITSELF has recovered wire members is checked recursively — the
+        // guarantee should not stop one level down.
+        if (value is not System.Collections.IEnumerable && WireMember.Recovered(t).Length > 0)
+            return ToNode(t, value);
+
+        if (value is System.Collections.IEnumerable seq && value is not string)
+        {
+            Type elem = ElementTypeOf(t);
+            var arr = new JsonArray();
+            foreach (object? item in seq) arr.Add(Coerce(item, elem, target, wireName));
+            return arr;
+        }
+
+        // Anything else (a plain leaf, a POCO with no wire members) goes through System.Text.Json unchanged.
+        return System.Text.Json.JsonSerializer.SerializeToNode(value, value.GetType());
+    }
+
+    static Type ElementTypeOf(Type t)
+        => t.IsArray ? t.GetElementType()!
+           : t.IsGenericType && t.GetGenericArguments().Length == 1 ? t.GetGenericArguments()[0]
+           : typeof(object);
+
+    static bool IsNumeric(Type t)
+        => t == typeof(int) || t == typeof(long) || t == typeof(short) || t == typeof(byte)
+           || t == typeof(uint) || t == typeof(ulong) || t == typeof(ushort) || t == typeof(sbyte)
+           || t == typeof(float) || t == typeof(double) || t == typeof(decimal);
+
+    // The near-miss hint — case-only and single-edit typos are what this check exists to catch, so name them.
+    static string Suggest(string given, System.Collections.Generic.IEnumerable<string> known)
+    {
+        foreach (string k in known)
+            if (string.Equals(k, given, StringComparison.OrdinalIgnoreCase)) return $"\n  Did you mean: '{k}'? (case differs)";
+        string? best = null; int bestDist = int.MaxValue;
+        foreach (string k in known)
+        {
+            int d = Distance(given, k);
+            if (d < bestDist) { bestDist = d; best = k; }
+        }
+        return best is not null && bestDist <= 2 ? $"\n  Did you mean: '{best}'?" : "";
+    }
+
+    // Levenshtein, small and allocation-cheap — only ever runs on the failure path.
+    static int Distance(string a, string b)
+    {
+        var prev = new int[b.Length + 1];
+        var cur = new int[b.Length + 1];
+        for (int j = 0; j <= b.Length; j++) prev[j] = j;
+        for (int i = 1; i <= a.Length; i++)
+        {
+            cur[0] = i;
+            for (int j = 1; j <= b.Length; j++)
+                cur[j] = Math.Min(Math.Min(prev[j] + 1, cur[j - 1] + 1), prev[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1));
+            (prev, cur) = (cur, prev);
+        }
+        return prev[b.Length];
+    }
+
     /// <summary>Deserialize a JSON array into a natural T[] through the game's converters — the array twin of
     /// <see cref="To{T}(string)"/>, so a mod drops the Il2CppReferenceArray&lt;T&gt; spelling. Deserializes into the
     /// il2cpp reference array (T is a reference/proxy element) then hands back the managed T[] (op_Implicit). null if

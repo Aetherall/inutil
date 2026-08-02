@@ -161,7 +161,11 @@ readonly struct WireMember
 {
     public readonly string Wire;
     public readonly Func<object, object?> Get;
-    WireMember(string wire, Func<object, object?> get) { Wire = wire; Get = get; }
+    // The member's DECLARED type. Unused by serialization (which reads the runtime value) but load-bearing for the
+    // WRITE direction: Json.ToNode coerces each supplied value to it, so an int-declared member never receives
+    // `120.0` — the literal that makes a strict reader throw MID-GRAPH and abort the whole enclosing object.
+    public readonly Type Declared;
+    WireMember(string wire, Type declared, Func<object, object?> get) { Wire = wire; Declared = declared; Get = get; }
 
     // RECOVERED: only members carrying a [JsonPropertyName] InteropPatch re-attached — the precise, opt-in list
     // for a wiremap type (renames applied, bookkeeping excluded because bookkeeping is never marked).
@@ -173,14 +177,14 @@ readonly struct WireMember
             JsonPropertyNameAttribute? attr = p.GetCustomAttribute<JsonPropertyNameAttribute>();
             if (attr is null || p.GetMethod is null) continue;
             PropertyInfo prop = p;
-            members.Add(new WireMember(attr.Name, obj => Read(() => prop.GetValue(obj))));
+            members.Add(new WireMember(attr.Name, prop.PropertyType, obj => Read(() => prop.GetValue(obj))));
         }
         foreach (FieldInfo f in type.GetFields(BindingFlags.Public | BindingFlags.Instance))
         {
             JsonPropertyNameAttribute? attr = f.GetCustomAttribute<JsonPropertyNameAttribute>();
             if (attr is null) continue;
             FieldInfo field = f;
-            members.Add(new WireMember(attr.Name, obj => Read(() => field.GetValue(obj))));
+            members.Add(new WireMember(attr.Name, field.FieldType, obj => Read(() => field.GetValue(obj))));
         }
         return members.ToArray();
     }

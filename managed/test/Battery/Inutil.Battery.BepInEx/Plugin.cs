@@ -32,6 +32,7 @@ public sealed class BatteryPlugin : BasePlugin
             ModHostCases.Register(suite);   // CAPSTONE — a compiled Hook<Game> mod fires + FrameDriver drives it
             CallbackCases.Register(suite);   // ConvKind.Callback — the inbound callback mirror end-to-end (needs the ToyGame fixture rebuild; SKIPs otherwise)
             ReplCases.Register(suite);   // the in-game C# REPL: Roslyn evaluates live submissions that hook the running game
+            WireShapeCases.Register(suite);   // Json.ToNode/To<T>(shape) — the CHECKED object-literal builder, validated against the metadata pillar's recovered wire names
             InteropMarkerCases.Register(suite);   // docs/contribution/architecture/16-metadata.md — the content-addressed interop marker (docs/reference/limits.md, Gap 3)
             SafeCases.Register(suite);   // docs/contribution/architecture/17-reach-faces.md — Inutil.Safe fault guard (TryInvoke substrate + Safe.Run face); LAST: its caught faults must not perturb earlier cases
             suite.RunAll(new FileResultSink(sidecar, "smoke"));

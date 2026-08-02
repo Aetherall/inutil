@@ -311,9 +311,56 @@ Check("From(object) rejects a managed object loud (before the serializer seam)",
     Throws<ArgumentException>(() => Inutil.Json.From(new object())));
 Check("From(object) rejects a managed string loud", Throws<ArgumentException>(() => Inutil.Json.From((object)"plain")));
 
+// Json.ToNode(Type, shape) — the CHECKED object-literal builder. Entirely game-independent (it reflects over the
+// target's [JsonPropertyName]s and builds a DOM), so the whole contract is testable here; only the final handoff to
+// the game's deserializer needs a game. A stand-in DTO stands for a patched proxy: what the pass re-attaches from
+// the wiremap is exactly these attributes.
+Console.WriteLine("\n── Json.ToNode — checked shape -> wire JSON (game-independent) ──");
+
+Check("valid shape builds the wire JSON, keyed by the RECOVERED wire names",
+    Inutil.Json.ToNode(typeof(ShapeTarget), new { Nickname = "toy", count = 3 }).ToJsonString()
+        is "{\"Nickname\":\"toy\",\"count\":3}");
+
+// The whole reason this API exists: an identifier that LOOKS like a member but is not must not sail through as a
+// silent default. Case-only and one-edit typos are the realistic mistakes, so each must name its near-miss.
+Check("unknown key fails LOUD (never a silent default)",
+    Throws<InvalidOperationException>(() => Inutil.Json.ToNode(typeof(ShapeTarget), new { countt = 1 })));
+Check("...and the message names the near-miss",
+    Message(() => Inutil.Json.ToNode(typeof(ShapeTarget), new { countt = 1 })).Contains("Did you mean: 'count'"));
+Check("...and a case-only mismatch is reported as such",
+    Message(() => Inutil.Json.ToNode(typeof(ShapeTarget), new { Count = 1 })).Contains("case differs"));
+
+// Coercion to the DECLARED type — the other silent-failure route. A double literal reaching an int-declared member
+// is what makes a strict reader throw MID-GRAPH and abort the whole enclosing object.
+Check("a double value for an INT-declared member is written as an integer literal",
+    Inutil.Json.ToNode(typeof(ShapeTarget), new { count = 120.0 }).ToJsonString() is "{\"count\":120}");
+Check("a float-declared member keeps its fractional form",
+    Inutil.Json.ToNode(typeof(ShapeTarget), new { productionTime = 1.5 }).ToJsonString() is "{\"productionTime\":1.5}");
+Check("an enum value is written as its underlying NUMBER (no string-enum converter needed)",
+    Inutil.Json.ToNode(typeof(ShapeTarget), new { count = ShapeKind.Second }).ToJsonString() is "{\"count\":1}");
+
+// A JsonNode passes through untouched — the escape hatch for a member this builder should not second-guess.
+Check("a JsonNode value is passed through verbatim",
+    Inutil.Json.ToNode(typeof(ShapeTarget), new { nested = System.Text.Json.Nodes.JsonNode.Parse("{\"raw\":1}") })
+        .ToJsonString() is "{\"nested\":{\"raw\":1}}");
+
+// A type with NO recovered members cannot check anything, so it must say so rather than reject every key as unknown
+// (that would read as "you typed it wrong" when the real cause is unpatched interop).
+Check("a target with no recovered wire members fails loud about THAT, not about the keys",
+    Message(() => Inutil.Json.ToNode(typeof(NullableProxy), new { HasValue = true }))
+        .Contains("no recovered wire members"));
+
 Console.WriteLine(fail == 0
     ? "\nINUTIL SDK TESTS GREEN — carrier identity holds, Leaf is identity, Array materializes, deferred paths fail loud."
     : $"\nINUTIL SDK TESTS RED — {fail} wrong.");
+
+// The message of the exception a call throws (empty if it does not throw) — for asserting that a failure EXPLAINS
+// itself, not merely that it happened.
+static string Message(Action a)
+{
+    try { a(); return ""; }
+    catch (Exception ex) { return ex.Message; }
+}
 return fail == 0 ? 0 : 1;
 
 // Drive the Conv tree DIRECTLY (unanchored Build + Convert) for the offline marshalling-LOGIC tests, bypassing
@@ -402,4 +449,18 @@ sealed class TupleProxy3<T1, T2, T3>
     public T2 Item2 { get; }
     public T3 Item3 { get; }
     public TupleProxy3(T1 a, T2 b, T3 c) { Item1 = a; Item2 = b; Item3 = c; }
+}
+
+// Stand-in for a PATCHED proxy: the [JsonPropertyName]s are exactly what InteropPatch's wire pass re-attaches from
+// the recovered wiremap, so validating against this type exercises the same discovery Json.ToNode uses in-game.
+// Member names differ from wire names on purpose (Handle/"Nickname"), which is the case a proxy-only tool cannot
+// know and the metadata pillar exists to recover.
+enum ShapeKind { First, Second }
+
+sealed class ShapeTarget
+{
+    [System.Text.Json.Serialization.JsonPropertyName("Nickname")] public string Handle { get; set; }
+    [System.Text.Json.Serialization.JsonPropertyName("count")] public int Count { get; set; }
+    [System.Text.Json.Serialization.JsonPropertyName("productionTime")] public float ProductionTime { get; set; }
+    [System.Text.Json.Serialization.JsonPropertyName("nested")] public object Nested { get; set; }
 }
