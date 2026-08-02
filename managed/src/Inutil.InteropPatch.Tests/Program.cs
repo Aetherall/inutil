@@ -395,56 +395,66 @@ try
             Check("idempotent: re-running the container field pass flips 0 (static included)",
                 new ContainerFieldRewriter().RewriteModule(stat).Flipped == 0);
 
-            // NULLABLE: must DEFER (its setter rebuild is instance-only and no static-field write helper exists).
-            var nRes = new NullableFieldRewriter().RewriteModule(stat);
+            // NULLABLE: must FLIP through the STATIC write path. A static field has no object and no instance
+            // offset — its storage is the class's static-fields block — so the instance rebuild cannot serve it;
+            // it must call WriteNullableStaticField and take the value from arg0 (there is no `this`). Emitting the
+            // instance shape here is not a mis-optimisation but INVALID IL, and it shipped that way once.
+            new NullableFieldRewriter().RewriteModule(stat);
             var rally = statGame.Properties.First(p => p.Name == "Rally");
-            Check("STATIC Nullable property (Game::Rally) DEFERS rather than miscompiling",
-                nRes.Defers.Any(d => d.Contains("Rally", StringComparison.Ordinal)
-                                     && d.Contains("static field-backed setter", StringComparison.Ordinal)),
-                $"defers: [{string.Join(" | ", nRes.Defers.Where(d => d.Contains("Rally", StringComparison.Ordinal)))}]");
-            Check("...and Game::Rally is left il2cpp-typed, with no instance-shaped write spliced in",
-                rally.PropertyType.FullName.Contains("Il2CppSystem.Nullable", StringComparison.Ordinal)
-                && rally.SetMethod!.Body.Instructions.All(i => i.Operand is not MethodReference wmr
+            Check("STATIC Nullable property (Game::Rally) flips to System.Nullable`1",
+                rally.PropertyType.FullName.StartsWith("System.Nullable`1", StringComparison.Ordinal),
+                rally.PropertyType.FullName);
+            Check("...and its setter calls the STATIC write helper, never the instance one",
+                rally.SetMethod!.Body.Instructions.Any(i => i.Operand is MethodReference smr && smr.Name == "WriteNullableStaticField")
+                && rally.SetMethod.Body.Instructions.All(i => i.Operand is not MethodReference wmr
                     || wmr.Name is not ("WriteNullableField" or "WriteNullableRefField")));
-            // ...and the audit names it as a KNOWN deferral, not a hole.
+            Check("...and it takes the value from ldarg.0 (the value slot on a static setter)",
+                rally.SetMethod.IsStatic && rally.SetMethod.Body.Instructions.Any(i => i.OpCode == OpCodes.Ldarg_0)
+                && rally.SetMethod.Body.Instructions.All(i => i.OpCode != OpCodes.Ldarg_1));
+            Check("...and the static getter still reads through the null-aware tail (BoxedToNullable)",
+                rally.GetMethod!.Body.Instructions.Any(i => i.Operand is MethodReference gmr && gmr.Name == "BoxedToNullable"));
+            Check("idempotent: re-running the accessor pass over the static Nullable flips 0",
+                new NullableFieldRewriter().RewriteModule(stat).Flipped == 0);
+            // Scoped to the STATIC members: this block runs only the two accessor passes, so returns/params are
+            // legitimately still unflipped here. The whole-fixture "zero residual" claim belongs where the FULL
+            // pass set runs — asserted on PatchDirectory's own result below.
             var statAudit = ResidualAudit.Scan(stat);
-            Check("...and the audit reports Game::Rally known-deferred (static), not unexplained",
-                statAudit.Any(x => x.Member.EndsWith("::Rally", StringComparison.Ordinal) && !x.Unexplained
-                                   && x.Why.Contains("static", StringComparison.Ordinal)),
-                $"[{string.Join(" | ", statAudit.Where(x => x.Member.Contains("Rally", StringComparison.Ordinal)).Select(x => x.Why))}]");
+            Check("no residual left for either STATIC member (Game::Rally, Game::Squad)",
+                !statAudit.Any(x => x.Member.EndsWith("::Rally", StringComparison.Ordinal)
+                                    || x.Member.EndsWith("::Squad", StringComparison.Ordinal)),
+                $"[{string.Join(" | ", statAudit.Where(x => x.Member.Contains("Rally", StringComparison.Ordinal) || x.Member.Contains("Squad", StringComparison.Ordinal)).Select(x => x.Member + " => " + x.Why))}]");
             stat.Dispose();
         }
 
-        // STATIC field-backed setter must DEFER, not miscompile. The rebuild is instance-only (it emits `ldarg.0` as
-        // `this` and calls WriteNullableField(Il2CppObjectBase, …)), but a static setter's arg0 is the VALUE and a
-        // static il2cpp field has no object — so emitting it produces INVALID IL that throws InvalidProgramException
-        // the moment a mod calls it. It shipped that way: three static setters in EFT's proxies carry such a body
-        // (e.g. EFT.AudioUtils::set__cachedDspScheduleLookaheadSec). ToyGame has no static Nullable field, so the
-        // shape is manufactured from a REAL Il2CppInterop accessor body — the fixture cannot supply it, and a
-        // hand-built body would prove nothing about the real generator's output.
+        // STATIC + REF-BEARING Nullable setter — the one rung with NO fixture member. Game::Rally covers static +
+        // value; a static Loadout? field would cover this, but adding one costs a full game rebuild + both loader
+        // reprovisions, so the shape is manufactured here by taking a REAL Il2CppInterop ref-bearing accessor body
+        // (Player::<Backpack>k__BackingField) and making it static. A hand-built body would prove nothing about the
+        // real generator's output; this proves the pass picks the STATIC + REF helper and the arg-0 value slot.
+        //
+        // HONEST LIMIT: this is an IL-shape assertion only. Unlike every other rung, WriteNullableRefStaticField's
+        // RUNTIME behaviour (box rebuild + il2cpp_field_static_set_value carrying an embedded string reference) is
+        // NOT proven in-game, because no fixture member reaches it. Treat it as unverified until one exists.
         {
             var statModule = ModuleDefinition.ReadModule(Copy("Assembly-CSharp.dll"),
                 new ReaderParameters { InMemory = true, AssemblyResolver = resolver });
             var stPlayer = statModule.GetTypes().First(t => t.Name == "Player");
-            var stProp = stPlayer.Properties.First(p => p.Name.Contains("Waypoint", StringComparison.Ordinal)
+            var stProp = stPlayer.Properties.First(p => p.Name.Contains("Backpack", StringComparison.Ordinal)
                                                         && p.Name.Contains("BackingField", StringComparison.Ordinal));
-            stProp.SetMethod!.IsStatic = true;      // same body, now a static accessor — the shape the pass must decline
+            stProp.SetMethod!.IsStatic = true;      // same real body, now a static ref-bearing accessor
 
-            var stRes = new NullableFieldRewriter().RewriteModule(statModule);
-            Check("static field-backed Nullable setter DEFERS (never a mis-emitted instance body)",
-                stRes.Defers.Any(d => d.Contains("static field-backed setter", StringComparison.Ordinal)),
-                $"defers: [{string.Join(" | ", stRes.Defers)}]");
-            Check("...and the static property is left UNFLIPPED rather than half-rewritten",
-                stProp.PropertyType.FullName.Contains("Il2CppSystem.Nullable", StringComparison.Ordinal)
-                && stProp.SetMethod.Body.Instructions.All(i => i.Operand is not MethodReference smr
-                    || smr.Name is not ("WriteNullableField" or "WriteNullableRefField")),
+            new NullableFieldRewriter().RewriteModule(statModule);
+            Check("static REF-BEARING Nullable setter uses WriteNullableRefStaticField",
+                stProp.SetMethod.Body.Instructions.Any(i => i.Operand is MethodReference smr
+                    && smr.Name == "WriteNullableRefStaticField"),
+                $"calls: [{string.Join(",", stProp.SetMethod.Body.Instructions.Select(i => (i.Operand as MethodReference)?.Name).Where(n => n is not null))}]");
+            Check("...and never the instance or value-rung write helper",
+                stProp.SetMethod.Body.Instructions.All(i => i.Operand is not MethodReference wmr
+                    || wmr.Name is not ("WriteNullableField" or "WriteNullableRefField" or "WriteNullableStaticField")));
+            Check("...and takes the value from ldarg.0, with the property flipped to the BARE proxy",
+                stProp.SetMethod.Body.Instructions.Any(i => i.OpCode == OpCodes.Ldarg_0)
+                && stProp.PropertyType.FullName.EndsWith("Loadout", StringComparison.Ordinal),
                 stProp.PropertyType.FullName);
-            // The audit must call it a KNOWN deferral, not a hole — the reason is real and recorded.
-            var stAudit = ResidualAudit.Scan(statModule);
-            Check("...and the audit reports it known-deferred (static), not unexplained",
-                stAudit.Any(x => x.Member.Contains("Waypoint", StringComparison.Ordinal) && !x.Unexplained
-                                 && x.Why.Contains("static", StringComparison.Ordinal)),
-                $"[{string.Join(" | ", stAudit.Where(x => x.Member.Contains("Waypoint", StringComparison.Ordinal)).Select(x => x.Member + " => " + x.Why))}]");
             statModule.Dispose();
         }
 
@@ -477,6 +487,15 @@ try
 
         Check("no .inutil-tmp left behind (atomic write cleaned up)",
             !Directory.EnumerateFiles(dir, "*.inutil-tmp").Any());
+
+        // The whole-fixture invariant, asserted where the FULL pass set has run: after a directory patch, NOTHING
+        // naturalizable is left wearing an il2cpp type. This is the check that would have caught every hole found
+        // in this pass's history — the method-backed accessor, the static container setter, the static Nullable
+        // setter — without anyone knowing to look for them. It is scoped to the fixture on purpose: a real game
+        // legitimately carries known-deferred residue (external/framework-rooted slots), ToyGame does not.
+        Check("residual audit: ZERO members left naturalizable-but-unflipped after PatchDirectory",
+            r.Residual.Count == 0,
+            $"[{string.Join(" | ", r.Residual.Select(x => x.Member + " => " + x.Why))}]");
 
         // Robust OUTCOME (no assumption about the source tree's starting flip-state): after the pass BOTH game
         // modules are flipped ON DISK in lockstep, and the atomic rename landed structurally-sound, re-readable proxies.

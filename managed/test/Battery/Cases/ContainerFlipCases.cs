@@ -290,6 +290,37 @@ public static class ContainerFlipCases
             return $"GrantGold(int? 5) then (int? null): Score {before} -> {after} (+5) — value-type Nullable param dematerialized present AND empty";
         });
 
+        // STATIC Nullable field (Game::Rally). A static il2cpp field has no object and no instance offset — its
+        // storage is the class's static-fields block — so the instance write helper cannot serve it; the pass emits
+        // WriteNullableStaticField, which rebuilds the box through metadata and stores it with
+        // il2cpp_field_static_set_value. Offline proves the IL shape; only a booted game proves the bytes land
+        // where the game's own read finds them, present AND empty.
+        suite.Add("nullable-accessor.static-field.flip.runs", () =>
+        {
+            Type gameT = FindProxyType("Game", out string typeName);
+            PropertyInfo rally = RequireProperty(gameT, "Rally");
+            MethodInfo peek = gameT.GetMethod("PeekRallyX")!;
+            string pt = rally.PropertyType.FullName ?? rally.PropertyType.Name;
+            Check.True(pt.StartsWith("System.Nullable", StringComparison.Ordinal),
+                $"{typeName}::Rally is '{pt}' — the static Nullable field did not flip");
+
+            Type vec3T = Nullable.GetUnderlyingType(rally.PropertyType)!;
+            object vec3 = Activator.CreateInstance(vec3T)!;
+            SetXyz(vec3T, ref vec3, 5f);
+            rally.SetValue(null, vec3);                                   // static write, present
+            float x = Convert.ToSingle(peek.Invoke(null, null));
+            Check.True(Math.Abs(x - 5f) < 0.001f,
+                $"Rally=Vec3(5) then PeekRallyX()={x}, expected 5 — the static Nullable write did not reach the static slot");
+            Check.True(rally.GetValue(null) is not null, "get_Rally returned null for a PRESENT static Nullable");
+
+            rally.SetValue(null, null);                                   // static write, empty
+            float none = Convert.ToSingle(peek.Invoke(null, null));
+            Check.True(Math.Abs(none - (-1f)) < 0.001f,
+                $"Rally=null then PeekRallyX()={none}, expected -1 — the EMPTY static write did not clear hasValue");
+            Check.True(rally.GetValue(null) is null, "get_Rally should be null after an empty static write");
+            return $"static Game::Rally round-trip: present(X=5) and empty(-1) through il2cpp_field_static_set_value";
+        });
+
         // VIRTUAL Nullable accessors (Entity/Boss::Beacon, ::Cache). get_X and set_X are separate vtable slots, so
         // the property, its getter and its setter must all flip across the whole override graph or the property is
         // a half-flip that LOADS and only misbehaves when touched. Boss's overrides deliberately store a DIFFERENT

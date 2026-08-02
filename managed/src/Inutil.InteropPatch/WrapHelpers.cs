@@ -232,6 +232,23 @@ public sealed class WrapHelpers
         return gim;
     }
 
+    // ValueTypeBridge.WriteNullable[Ref]StaticField<T>(nint, value) -> void — the STATIC setter targets. Same pair of
+    // rungs as the instance twins below, minus the Il2CppObjectBase: a static field has no object.
+    public MethodReference WriteNullableStaticFieldClosed(TypeReference valType, bool refBearing)
+    {
+        var declType = new TypeReference("Inutil.Marshal", "ValueTypeBridge", _module, _inutil);
+        var open = new MethodReference(refBearing ? "WriteNullableRefStaticField" : "WriteNullableStaticField",
+                                       _module.TypeSystem.Void) { DeclaringType = declType, HasThis = false };
+        var tp = new GenericParameter(open);
+        open.GenericParameters.Add(tp);
+        open.Parameters.Add(new ParameterDefinition(_module.TypeSystem.IntPtr));                  // (nint fieldInfo)
+        open.Parameters.Add(new ParameterDefinition(refBearing ? tp : SysNullableOf(tp)));        // (T | System.Nullable<T> value)
+
+        var gim = new GenericInstanceMethod(open);
+        gim.GenericArguments.Add(_module.ImportReference(valType));
+        return gim;
+    }
+
     // ValueTypeBridge.WriteNullableRefField<T>(Il2CppObjectBase, nint, T) -> void — the REF-BEARING setter target.
     public MethodReference WriteNullableRefFieldClosed(TypeReference refElem)
     {

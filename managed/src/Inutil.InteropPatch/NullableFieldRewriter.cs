@@ -95,16 +95,6 @@ public sealed class NullableFieldRewriter
             if (!getterOk || !setterOk || (getter is null && setter is null))
             { defers.Add($"{type.FullName}::{prop.Name}  (nullable field -> DEFER: accessor not handleable)"); continue; }
 
-            // STATIC + field-backed setter: the rebuild below is instance-only — it emits `ldarg.0` as `this` and
-            // calls WriteNullableField(Il2CppObjectBase obj, …), but a STATIC setter's arg0 is the VALUE and there is
-            // no object at all (a static il2cpp field needs il2cpp_field_static_set_value, which no helper exposes
-            // yet). Emitting it anyway produced INVALID IL — verified on EFT proxies, where three static setters
-            // (e.g. EFT.AudioUtils::set__cachedDspScheduleLookaheadSec) carry a body that pushes a Nullable<T> where
-            // an Il2CppObjectBase is expected; it would throw InvalidProgramException the moment a mod called one.
-            // Defer LOUDLY instead: a member left unflipped is a known limit, a mis-emitted body is a landmine.
-            // (The METHOD-backed arm is unaffected — ParamFlip.Splice derives the arg index from HasThis.)
-            if (setter is not null && setterFieldInfo is not null && setter.IsStatic)
-            { defers.Add($"{type.FullName}::{prop.Name}  (nullable field -> DEFER: static field-backed setter, no static-field write helper)"); continue; }
 
             // The two derivations of the natural type — this pass's own (targetType, from the property's element) and
             // the resolver's (for the spliced param) — must agree, or getter and setter would flip to different types
@@ -129,17 +119,31 @@ public sealed class NullableFieldRewriter
             // storing an embedded managed reference with no GC write barrier.
             if (setter is not null && setterFieldInfo is not null)
             {
-                MethodReference writeClosed = refBearing ? wrap.WriteNullableRefFieldClosed(t) : wrap.WriteNullableFieldClosed(t);
                 MethodBody body = setter.Body;
                 body.ExceptionHandlers.Clear();
                 body.Variables.Clear();
                 body.Instructions.Clear();
                 body.InitLocals = false;
                 ILProcessor il = body.GetILProcessor();
-                il.Emit(OpCodes.Ldarg_0);                    // this (the proxy — an Il2CppObjectBase)
-                il.Emit(OpCodes.Ldsfld, setterFieldInfo);    // nint fieldInfo (NativeFieldInfoPtr_<Field>)
-                il.Emit(OpCodes.Ldarg_1);                    // value: System.Nullable<T> (value-type) or T (ref-bearing)
-                il.Emit(OpCodes.Call, writeClosed);
+
+                // STATIC and INSTANCE differ in BOTH operands: a static field has no object to write through, and
+                // a static setter's value is arg0 (the slot that holds `this` on an instance method). Emitting the
+                // instance shape for a static member is not a mis-optimisation but INVALID IL — it did ship that
+                // way, and three static setters in a real game's proxies carry a body that pushes a Nullable<T>
+                // where an Il2CppObjectBase belongs (InvalidProgramException on first call).
+                if (setter.IsStatic)
+                {
+                    il.Emit(OpCodes.Ldsfld, setterFieldInfo);                       // nint fieldInfo
+                    il.Emit(OpCodes.Ldarg_0);                                       // value (arg0: no `this`)
+                    il.Emit(OpCodes.Call, wrap.WriteNullableStaticFieldClosed(t, refBearing));
+                }
+                else
+                {
+                    il.Emit(OpCodes.Ldarg_0);                                        // this (the proxy — an Il2CppObjectBase)
+                    il.Emit(OpCodes.Ldsfld, setterFieldInfo);                        // nint fieldInfo (NativeFieldInfoPtr_<Field>)
+                    il.Emit(OpCodes.Ldarg_1);                                        // value: System.Nullable<T> or T
+                    il.Emit(OpCodes.Call, refBearing ? wrap.WriteNullableRefFieldClosed(t) : wrap.WriteNullableFieldClosed(t));
+                }
                 il.Emit(OpCodes.Ret);
                 setter.Parameters[0].ParameterType = targetType;
             }

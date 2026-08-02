@@ -196,6 +196,63 @@ public static unsafe class ValueTypeBridge
         GC.KeepAlive(value);
     }
 
+    // ── STATIC Nullable field writes (the twins of WriteNullableField / WriteNullableRefField) ────────────────
+    // A static il2cpp field has NO object and NO instance offset — its storage lives in the class's static-fields
+    // block — so the instance helpers above cannot serve it (they compute obj.Pointer + il2cpp_field_get_offset).
+    // Emitting them for a static setter produced INVALID IL: `ldarg.0` is the VALUE on a static method, not `this`.
+    //
+    // Both rungs go through the SAME box-rebuild as RefToNullable — il2cpp_object_new on the field's own
+    // Nullable<T'> class is zero-init (the EMPTY case, hasValue = 0); a present value gets a GC-aware copy of its
+    // inner bytes plus hasValue = 1 — and then store the box's unboxed bytes with il2cpp_field_static_set_value.
+    // That is il2cpp's own API for static-field stores, and the one Il2CppInterop's OWN generated static setter
+    // uses to store an object REFERENCE into a static field (visible in any generated static reference-typed
+    // accessor), so it is the sanctioned path for a ref-bearing inner rather than something invented here.
+    // One shape for both rungs: the value rung could write the inline layout, but there is no second layout
+    // assumption to get wrong if both build the box through metadata.
+
+    /// <summary>Write a static Nullable&lt;T&gt; field (VALUE element) — the static twin of WriteNullableField.</summary>
+    public static unsafe void WriteNullableStaticField<T>(nint fieldInfo, T? value) where T : struct
+        => WriteStaticNullableBox(fieldInfo, value.HasValue, box =>
+        {
+            T inner = value.GetValueOrDefault();
+            nint vf = IL2CPP.il2cpp_class_get_field_from_name(NullableClassOf(fieldInfo), "value");
+            if (vf == 0) throw new NotSupportedException("ValueTypeBridge: static il2cpp Nullable has no 'value' field");
+            IL2CPP.il2cpp_field_set_value(box, vf, Unsafe.AsPointer(ref inner));
+        });
+
+    /// <summary>Write a static Nullable&lt;T&gt; field (REF-BEARING element) — the static twin of WriteNullableRefField.</summary>
+    public static unsafe void WriteNullableRefStaticField<T>(nint fieldInfo, T value) where T : Il2CppObjectBase
+    {
+        WriteStaticNullableBox(fieldInfo, value is not null, box =>
+        {
+            nint vf = IL2CPP.il2cpp_class_get_field_from_name(NullableClassOf(fieldInfo), "value");
+            if (vf == 0) throw new NotSupportedException("ValueTypeBridge: static il2cpp Nullable has no 'value' field");
+            IL2CPP.il2cpp_field_set_value(box, vf, (void*)IL2CPP.il2cpp_object_unbox(value!.Pointer));  // GC-aware inner copy
+        });
+        GC.KeepAlive(value);
+    }
+
+    static nint NullableClassOf(nint fieldInfo)
+        => IL2CPP.il2cpp_class_from_il2cpp_type(IL2CPP.il2cpp_field_get_type(fieldInfo));
+
+    // Build the boxed Nullable for a static field, let the caller fill `value` when present, set hasValue, and
+    // store the box's UNBOXED bytes into the static slot. Shared so the two rungs cannot drift on the box shape.
+    static unsafe void WriteStaticNullableBox(nint fieldInfo, bool hasValue, Action<nint> fillValue)
+    {
+        nint klass = NullableClassOf(fieldInfo);
+        if (klass == 0)
+            throw new NotSupportedException($"ValueTypeBridge: cannot resolve the il2cpp Nullable class of static field 0x{fieldInfo:X} (fail-loud, never a silent mis-marshal).");
+        nint box = IL2CPP.il2cpp_object_new(klass);                       // zero-init -> the EMPTY Nullable
+        if (hasValue)
+        {
+            fillValue(box);
+            nint hf = IL2CPP.il2cpp_class_get_field_from_name(klass, "hasValue");
+            if (hf == 0) throw new NotSupportedException("ValueTypeBridge: static il2cpp Nullable has no 'hasValue' field");
+            byte one = 1; IL2CPP.il2cpp_field_set_value(box, hf, &one);
+        }
+        IL2CPP.il2cpp_field_static_set_value(fieldInfo, (void*)IL2CPP.il2cpp_object_unbox(box));
+    }
+
     // The pointer to pass for one already-converted argument, per the il2cpp_runtime_invoke convention InvokeUnboxed
     // documents. A managed primitive/blittable value is PINNED (its handle parked in `pins`, freed after the invoke)
     // so its boxed data address stays fixed across the call — AddrOfPinnedObject on a boxed value type is its data,
