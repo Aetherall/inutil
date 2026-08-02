@@ -32,7 +32,12 @@ in
 
     # --- Run / test the Windows artifacts on Linux, and host the Unity IL2CPP
     #     toy-game build under wine (editor + msvc-wine). See tools/wine/. ---
-    pkgs.wine64
+    # WoW64 wine, NOT pkgs.wine64: Unity ships BOTH 2022.3 installers (editor + IL2CPP module) as PE32
+    # **i386** NSIS self-extractors, and pkgs.wine64 carries no 32-bit PE modules at all (no syswow64), so
+    # the silent install dies with `failed to load \??\C:\windows\syswow64\ntdll.dll error c0000135` before
+    # unpacking anything. wineWow64Packages is the new-WoW64 build — one 64-bit unix binary that can still
+    # load 32-bit PE images, which is exactly what running the installers needs (the editor itself is x64).
+    pkgs.wineWow64Packages.stable
     pkgs.curl          # download Unity installers
     pkgs.python3       # msvc-wine vsdownload.py
     pkgs.msitools      # msvc-wine MSI extraction (msiextract)
