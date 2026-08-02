@@ -174,7 +174,12 @@ in
       echo ">> [5/6] metadata-test (pillar: wire-map emit; Cpp2IL integration when a game is provisioned)"
       dotnet build src/Inutil.Metadata.Tests/Inutil.Metadata.Tests.csproj -c Release -v q --nologo
       dotnet src/Inutil.Metadata.Tests/bin/Release/net9.0/inutil-metadata-tests.dll
-      INTEROP="''${INUTIL_UNITY_DIR:-$DEVENV_ROOT/.unity-build}/loaders/bepinex/BepInEx/interop"
+      # PRISTINE proxies preferred: setup-bepinex snapshots interop/ the moment it is generated, because the first
+      # bepinex-validate patches interop/ in place. On flipped proxies this suite's idempotency cases pass vacuously
+      # (and it now refuses to run at all), so the snapshot is what keeps the gate runnable after a validate.
+      INTEROP_BASE="''${INUTIL_UNITY_DIR:-$DEVENV_ROOT/.unity-build}/loaders/bepinex/BepInEx"
+      INTEROP="$INTEROP_BASE/interop.pristine"
+      [ -d "$INTEROP" ] || INTEROP="$INTEROP_BASE/interop"
       if [ -d "$INTEROP" ]; then
         echo ">> [6/6] interoppatch-test (IL-rewrite seam over real proxies)"
         dotnet build src/Inutil.InteropPatch.Tests/Inutil.InteropPatch.Tests.csproj -c Release -v q --nologo

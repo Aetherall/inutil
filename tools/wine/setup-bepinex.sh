@@ -110,6 +110,17 @@ set -e
 # --- 4. verify interop generated -----------------------------------------------------------------
 n=$(ls "$BEP/interop"/*.dll 2>/dev/null | wc -l)
 [ -f "$BEP/interop/Assembly-CSharp.dll" ] || { echo "!! first run did not generate interop ($BEP/interop empty); see run.log/player.log/$LOG" >&2; exit 1; }
+
+# --- 4b. snapshot the PRISTINE proxies ------------------------------------------------------------
+# interop/ is generated unpatched exactly once — here — and the very next thing that touches it (a
+# bepinex-validate run, a manual inutil-interoppatch, a consumer install) flips it in place. The offline
+# interoppatch suite needs UNPATCHED input to mean anything (on flipped proxies its idempotency cases
+# pass vacuously), so the one moment the pristine state exists is the moment to keep a copy. Taken NOW,
+# before anything can patch it, rather than asking a later step not to.
+rm -rf "$BEP/interop.pristine"
+cp -r "$BEP/interop" "$BEP/interop.pristine"
+echo ">>   pristine proxy snapshot -> $BEP/interop.pristine (the offline suite's input)"
+
 echo ">> SUCCESS — provisioned $LOADER_DIR"
 echo ">>   game + BepInEx $BEPINEX_VER + $n interop assemblies"
 echo ">> next: 'bepinex-validate'"

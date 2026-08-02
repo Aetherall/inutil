@@ -7,10 +7,13 @@ using Inutil.InteropPatch.Tests;
 // Offline IL-rewrite proof: drive the pure engine (VirtualSlotPlanner + Task family) over the REAL generated
 // ToyGame proxies. No game, no wine; the proxies are read (copied, never mutated) from the loader tree.
 //
-// The proxies are in whatever state a prior patch left them, so the assertions are robust to the starting state:
-// the cross-module GATE is asserted at the PLAN level (the engine routes Backend`1::OpenSession's slot to the
-// cross-module root and marks it flippable), and the flip mechanics as OUTCOMES (after the pass the root IS
-// System.Task`1) plus a Cecil round-trip and idempotency.
+// The source dir MUST be PRISTINE (unpatched) — asserted below via the schema marker, not assumed. Most assertions
+// are written as outcomes to be robust to the starting state (the cross-module GATE at the PLAN level; the flip
+// mechanics as OUTCOMES — after the pass the root IS System.Task`1 — plus a Cecil round-trip and idempotency), but
+// "robust to the starting state" was never actually true of the suite as a whole: on an already-flipped input a
+// negative assertion inverts (GetCombo is NOT flipped), every idempotency case passes VACUOUSLY, and a before/after
+// case like the residual audit's pre-flip half cannot be expressed at all. A wrong-state input is therefore a hard
+// setup error (exit 2), never a red run that looks like a code regression.
 
 // ── offline suites: pure path/projection logic — run with NO provisioned game ──
 Console.WriteLine(">> --game locator (§5.1)");
@@ -39,6 +42,20 @@ if (interopDir is null || !Directory.Exists(interopDir))
     return 2;
 }
 Console.WriteLine($">> proxies: {interopDir}");
+
+// The Cecil integration below copies proxies OUT of this dir and asserts what the passes do to them — which is only
+// meaningful if they arrive UNPATCHED. Patch that dir out of band (a manual inutil-interoppatch run, a consumer's
+// install step) and the suite silently changes meaning: negative assertions invert, and every "re-running the pass
+// flips 0" idempotency case passes VACUOUSLY while testing nothing. That is a worse outcome than a red run, so the
+// state is asserted rather than assumed — using the same marker this suite already exercises further down.
+if (ContentMarker.ReadHash(interopDir, SchemaMarker.InteropMarkerFileName) is { } stampedHash)
+{
+    Console.Error.WriteLine(
+        $"\n!! the interop dir at {interopDir} is ALREADY PATCHED (marker {SchemaMarker.InteropMarkerFileName} = {stampedHash}).\n" +
+        "   These tests need PRISTINE proxies — on an already-flipped input the idempotency cases pass vacuously.\n" +
+        "   Regenerate with 'setup-bepinex --force', or point INUTIL_INTEROP_DIR at an unpatched copy.");
+    return 2;
+}
 
 int failures = offlineFailures;   // fold the offline verdict into the overall tally
 void Check(string name, bool ok, string? detail = null)
@@ -244,6 +261,96 @@ try
             $"Entity={entWp?.ReturnType.FullName}, Boss={bossWp?.ReturnType.FullName}");
         Check("idempotent: re-running the nullable pass flips 0", new NullableReturnRewriter().RewriteModule(module).Flipped == 0);
 
+        // Nullable ACCESSOR pass, METHOD-backed arm (Player::Waypoint / Player::Backpack). An auto-property yields
+        // TWO proxy members over one storage: a FIELD-backed pair over <X>k__BackingField and a METHOD-backed pair
+        // for the property itself. Only the first used to flip — the pre-check demanded a NativeFieldInfoPtr a real
+        // property's setter never has, so the whole property deferred (getter included, via all-or-nothing).
+        //
+        // AUDIT FIRST, while the module is still unflipped for these members: the residual audit must SEE them as
+        // unexplained holes. A check that only ever runs against the fixed state cannot tell "covered" from "never
+        // looked" — which is precisely the failure the audit exists to catch.
+        var preAudit = ResidualNullableAudit.Scan(module);
+        Check("audit SEES the unflipped method-backed accessors as unexplained holes (pre-flip)",
+            preAudit.Any(x => x.Member.EndsWith("::Waypoint", StringComparison.Ordinal) && x.Unexplained)
+            && preAudit.Any(x => x.Member.EndsWith("::Backpack", StringComparison.Ordinal) && x.Unexplained),
+            $"pre-flip unexplained: [{string.Join(", ", preAudit.Where(x => x.Unexplained).Select(x => x.Member))}]");
+
+        var nfres = new NullableFieldRewriter().RewriteModule(module);
+        foreach (var f in nfres.Flips) Console.WriteLine($"     FLIP  {f}");
+
+        var playerT = module.GetTypes().First(t => t.Name == "Player");
+        PropertyDefinition? wp = playerT.Properties.FirstOrDefault(p => p.Name == "Waypoint");
+        PropertyDefinition? bp = playerT.Properties.FirstOrDefault(p => p.Name == "Backpack");
+        // VALUE rung -> System.Nullable<Vec3>; REF-BEARING rung -> the BARE proxy (System.Nullable<class> is illegal).
+        Check("Player::Waypoint (method-backed accessor) flips to System.Nullable`1",
+            wp?.PropertyType.FullName.StartsWith("System.Nullable`1", StringComparison.Ordinal) == true, wp?.PropertyType.FullName);
+        Check("Player::Backpack (method-backed, ref-bearing) flips to the bare Loadout proxy",
+            bp?.PropertyType.FullName.EndsWith("Loadout", StringComparison.Ordinal) == true, bp?.PropertyType.FullName);
+        // get/set/property must agree — a half-flip still LOADS, so only an explicit check catches it.
+        Check("...and Waypoint's accessors agree with the property type (no half-flip)",
+            wp?.GetMethod?.ReturnType.FullName == wp?.PropertyType.FullName
+            && wp?.SetMethod?.Parameters[0].ParameterType.FullName == wp?.PropertyType.FullName,
+            $"get={wp?.GetMethod?.ReturnType.FullName}, set={wp?.SetMethod?.Parameters[0].ParameterType.FullName}");
+        Check("...and Backpack's accessors agree with the property type (no half-flip)",
+            bp?.GetMethod?.ReturnType.FullName == bp?.PropertyType.FullName
+            && bp?.SetMethod?.Parameters[0].ParameterType.FullName == bp?.PropertyType.FullName,
+            $"get={bp?.GetMethod?.ReturnType.FullName}, set={bp?.SetMethod?.Parameters[0].ParameterType.FullName}");
+        // The setter keeps its invoke body and gains the entry dematerialization — a signature-only flip would hand
+        // the natural value straight to il2cpp_object_unbox. The ref-bearing rung must use the DEDICATED helper.
+        Check("...and set_Waypoint body calls Il2CppMarshal::ToIl2CppTyped (spliced param dematerialize)",
+            wp?.SetMethod?.Body?.Instructions.Any(i => i.Operand is MethodReference mr
+                && mr.DeclaringType.FullName == "Inutil.Marshal.Il2CppMarshal" && mr.Name == "ToIl2CppTyped") == true);
+        Check("...and set_Backpack body calls ValueTypeBridge::RefToNullable (ref-bearing box rebuild)",
+            bp?.SetMethod?.Body?.Instructions.Any(i => i.Operand is MethodReference mr
+                && mr.DeclaringType.FullName == "Inutil.Marshal.ValueTypeBridge" && mr.Name == "RefToNullable") == true);
+        // The getter is a TAIL-SWAP over the same invoke body: the broken `newobj Nullable<T>(ptr)` becomes the
+        // null-aware read (runtime_invoke boxes a Nullable return exactly as the field box does).
+        Check("...and get_Backpack body calls ValueTypeBridge::BoxedToRefNullable (getter tail-swap)",
+            bp?.GetMethod?.Body?.Instructions.Any(i => i.Operand is MethodReference mr
+                && mr.DeclaringType.FullName == "Inutil.Marshal.ValueTypeBridge" && mr.Name == "BoxedToRefNullable") == true);
+        Check("idempotent: re-running the nullable ACCESSOR pass flips 0",
+            new NullableFieldRewriter().RewriteModule(module).Flipped == 0);
+
+        // ...and now the audit must report them GONE. Both directions asserted, so neither a blind audit nor an
+        // unflipped member can pass silently.
+        var postAudit = ResidualNullableAudit.Scan(module);
+        Check("audit reports NO unexplained residual after the accessor pass",
+            !postAudit.Any(x => x.Unexplained),
+            $"unexplained: [{string.Join(", ", postAudit.Where(x => x.Unexplained).Select(x => x.Member + " — " + x.Why))}]");
+
+        // STATIC field-backed setter must DEFER, not miscompile. The rebuild is instance-only (it emits `ldarg.0` as
+        // `this` and calls WriteNullableField(Il2CppObjectBase, …)), but a static setter's arg0 is the VALUE and a
+        // static il2cpp field has no object — so emitting it produces INVALID IL that throws InvalidProgramException
+        // the moment a mod calls it. It shipped that way: three static setters in EFT's proxies carry such a body
+        // (e.g. EFT.AudioUtils::set__cachedDspScheduleLookaheadSec). ToyGame has no static Nullable field, so the
+        // shape is manufactured from a REAL Il2CppInterop accessor body — the fixture cannot supply it, and a
+        // hand-built body would prove nothing about the real generator's output.
+        {
+            var statModule = ModuleDefinition.ReadModule(Copy("Assembly-CSharp.dll"),
+                new ReaderParameters { InMemory = true, AssemblyResolver = resolver });
+            var stPlayer = statModule.GetTypes().First(t => t.Name == "Player");
+            var stProp = stPlayer.Properties.First(p => p.Name.Contains("Waypoint", StringComparison.Ordinal)
+                                                        && p.Name.Contains("BackingField", StringComparison.Ordinal));
+            stProp.SetMethod!.IsStatic = true;      // same body, now a static accessor — the shape the pass must decline
+
+            var stRes = new NullableFieldRewriter().RewriteModule(statModule);
+            Check("static field-backed Nullable setter DEFERS (never a mis-emitted instance body)",
+                stRes.Defers.Any(d => d.Contains("static field-backed setter", StringComparison.Ordinal)),
+                $"defers: [{string.Join(" | ", stRes.Defers)}]");
+            Check("...and the static property is left UNFLIPPED rather than half-rewritten",
+                stProp.PropertyType.FullName.Contains("Il2CppSystem.Nullable", StringComparison.Ordinal)
+                && stProp.SetMethod.Body.Instructions.All(i => i.Operand is not MethodReference smr
+                    || smr.Name is not ("WriteNullableField" or "WriteNullableRefField")),
+                stProp.PropertyType.FullName);
+            // The audit must call it a KNOWN deferral, not a hole — the reason is real and recorded.
+            var stAudit = ResidualNullableAudit.Scan(statModule);
+            Check("...and the audit reports it known-deferred (static), not unexplained",
+                stAudit.Any(x => x.Member.Contains("Waypoint", StringComparison.Ordinal) && !x.Unexplained
+                                 && x.Why.Contains("static", StringComparison.Ordinal)),
+                $"[{string.Join(" | ", stAudit.Where(x => x.Member.Contains("Waypoint", StringComparison.Ordinal)).Select(x => x.Member + " => " + x.Why))}]");
+            statModule.Dispose();
+        }
+
         // Round-trip: the rewritten module must WRITE and RE-READ with the flip intact (structurally-sound IL).
         string outPath = Path.Combine(work, "acs-container.patched.dll");
         module.Write(outPath);
@@ -334,9 +441,18 @@ static MethodDefinition? FindMethod(ModuleDefinition module, string typeName, st
     => module.GetTypes().FirstOrDefault(t => t.Name == typeName)?.Methods.FirstOrDefault(m => m.Name == methodName);
 
 // null (not a throw) when .unity-build is absent — an unprovisioned box still runs the pure locator tests above.
+//
+// Prefers interop.pristine — the unpatched snapshot setup-bepinex takes at generation time. The live interop/ is
+// patched in place by the first bepinex-validate (or any manual patch), which would make this suite refuse to run
+// on any box that has ever validated; the snapshot is what keeps a pristine input available without a reprovision.
+// Falls back to interop/ so a tree provisioned before the snapshot existed still runs (and the marker gate above
+// tells it what to do if that one is already patched).
 static string? FindInteropDir()
 {
     var dir = new DirectoryInfo(AppContext.BaseDirectory);
     while (dir is not null && !Directory.Exists(Path.Combine(dir.FullName, ".unity-build"))) dir = dir.Parent;
-    return dir is null ? null : Path.Combine(dir.FullName, ".unity-build", "loaders", "bepinex", "BepInEx", "interop");
+    if (dir is null) return null;
+    string bep = Path.Combine(dir.FullName, ".unity-build", "loaders", "bepinex", "BepInEx");
+    string pristine = Path.Combine(bep, "interop.pristine");
+    return Directory.Exists(pristine) ? pristine : Path.Combine(bep, "interop");
 }
