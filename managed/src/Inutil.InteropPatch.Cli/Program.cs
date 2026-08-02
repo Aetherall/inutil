@@ -61,15 +61,9 @@ foreach (var (dll, d) in gameDefers)
 if (r.Defers.Count > gameDefers.Count)
     Console.WriteLine($"   defer  ({r.Defers.Count - gameDefers.Count} more in framework proxies — deferred by design)");
 
-// What the patch LEFT behind, whether or not any pass noticed it. Known deferrals are a count; a residual with no
-// known reason is a hole a consumer meets as a raw il2cpp spelling, so it is named individually.
-if (r.Residual.Count > 0)
-{
-    Console.WriteLine($"\n== residual: {r.Residual.Count} member(s) left wearing a naturalizable il2cpp type " +
-                      $"({r.Residual.Count - r.Unexplained.Count} known-deferred, {r.Unexplained.Count} unexplained) ==");
-    foreach (Residual x in r.Unexplained)
-        Console.WriteLine($"   !! HOLE  {x.Module}: {x.Member}  ({x.Why})");
-}
+// NB — the residual report is NOT printed here. PatchDirectory already wrote it to the log handed to it above, and
+// printing it again is what made a reader count 68 hole lines against a summary of 34 and conclude the audit
+// contradicted itself. There were always 34; they were emitted twice. One emitter, in the library.
 
 // Disk-only step: re-attach the recovered wire names onto the proxies. The wiremap (produced offline by the
 // metadata pillar) sits in the interop dir; INUTIL_WIREMAP overrides.

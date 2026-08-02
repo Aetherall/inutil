@@ -84,6 +84,14 @@ public sealed class BepInExPlugin : BasePlugin
         Log.LogInfo($"inutil: persisted the natural-typing patch to disk — {r.TotalFlipped} member(s) across " +
                     $"{r.Patched.Count} assembl{(r.Patched.Count == 1 ? "y" : "ies")} (schema {r.SchemaHash}); " +
                     "mod compiles now see the same surface the runtime binds.");
+        // Holes were silent on every in-game path: PatchDirectory only writes the residual report to a log, and both
+        // in-game callers pass null, so a boot that left N members wearing a raw il2cpp spelling said nothing at all.
+        // A mod author then meets those members as a compile error with no explanation anywhere. Count here, names
+        // from `inutil-interoppatch` (the same audit, printed in full).
+        if (r.Unexplained.Count > 0)
+            Log.LogWarning($"inutil: {r.Unexplained.Count} member(s) were left wearing a raw il2cpp type with no known " +
+                           "deferral reason — natural typing does not reach them. Run inutil-interoppatch on this " +
+                           "interop dir to list them.");
     }
 
     // Isolated (NoInlining) so its Inutil.Mods reference is JIT'd HERE — inside the caller's try — making an

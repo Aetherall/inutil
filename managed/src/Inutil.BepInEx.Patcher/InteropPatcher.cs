@@ -61,9 +61,15 @@ public sealed class PreloadInteropPatcher : BasePatcher
             }
             DirectoryPatchResult r = Inutil.InteropPatch.InteropPatcher.PatchDirectory(InteropDir, null);
             _skip = true;   // disk is now patched + marker stamped; the read below picks it up — no in-memory pass
+            // The residual audit is otherwise invisible on this path (PatchDirectory reports it to a log, and we pass
+            // null): a boot could leave members wearing a raw il2cpp spelling and say nothing. Carry the COUNT; the
+            // names come from running inutil-interoppatch, which prints the same audit in full.
+            string holes = r.Unexplained.Count > 0
+                ? $" {r.Unexplained.Count} member(s) left raw with no known deferral reason — run inutil-interoppatch to list them."
+                : "";
             _ctorReport = $"inutil: natural-typed the interop proxies ON DISK in the pre-read window — " +
                           $"{r.TotalFlipped} member(s) across {r.Patched.Count} assembl{(r.Patched.Count == 1 ? "y" : "ies")} " +
-                          $"(schema {r.SchemaHash}); the preloader loads the patched files directly.";
+                          $"(schema {r.SchemaHash}); the preloader loads the patched files directly.{holes}";
             Trace($"ctor: disk-patched {r.TotalFlipped} member(s) across {r.Patched.Count} assemblies");
         }
         catch (Exception ex)

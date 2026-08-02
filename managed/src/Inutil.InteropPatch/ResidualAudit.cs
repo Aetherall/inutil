@@ -59,12 +59,17 @@ public static class ResidualAudit
                 // Accessors are reported through their property (above) — reporting both doubles every hit.
                 if (m.IsGetter || m.IsSetter) continue;
 
+                // A method's identity is its SIGNATURE, not its name. Reported by name alone, three distinct
+                // overloads of Sirenix's DeserializeValue rendered as three identical lines — indistinguishable
+                // from one hole reported three times, which is how a duplicate-looking report gets dismissed.
+                string sig = $"{type.FullName}::{m.Name}({string.Join(", ", m.Parameters.Select(x => x.ParameterType.Name))})";
+
                 if (Naturalizable(module, m.ReturnType) is { } rk)
-                    found.Add(Classify(mod, $"{type.FullName}::{m.Name} (return)", m.ReturnType, m.IsVirtual, $"{rk} return"));
+                    found.Add(Classify(mod, $"{sig} (return)", m.ReturnType, m.IsVirtual, $"{rk} return"));
 
                 foreach (ParameterDefinition p in m.Parameters)
                     if (Naturalizable(module, p.ParameterType) is { } ak)
-                        found.Add(Classify(mod, $"{type.FullName}::{m.Name}({p.Name}) (param)", p.ParameterType, m.IsVirtual, $"{ak} param"));
+                        found.Add(Classify(mod, $"{sig} (param '{p.Name}')", p.ParameterType, m.IsVirtual, $"{ak} param"));
             }
         }
         return found;
