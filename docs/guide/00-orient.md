@@ -29,6 +29,7 @@ On top of those three sit the tools you reach for less often, but which unlock t
 |---|---|---|
 | `Safe` | calling into the game without a crash taking down the process (catches hardware faults, not just managed exceptions) | [4. Escape hatches](./04-escape-hatches.md) |
 | `Invoke` · `Probe` · `Introspect` · `Fields` | reaching a method/field **by name** when you don't have a typed proxy for it (erased handles, unknown-at-author-time types) | [4. Escape hatches](./04-escape-hatches.md) |
+| `Json` · `Wire` | building a game object the way the game does — from its **wire JSON**, through the game's own converters — instead of `new` + by-name field writes | [5. Wire JSON](./05-wire-json.md) |
 | the **REPL** | poking at the live game from a `telnet` prompt while it runs | [6. REPL](./06-repl.md) |
 
 ## The mental model

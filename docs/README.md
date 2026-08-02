@@ -20,6 +20,7 @@ It ships over two loaders — **BepInEx** and **MelonLoader** — on one shared 
 - [`guide/02-hooking.md`](./guide/02-hooking.md) — `Hook<Game>`: name a method like the target, call `Proceed<T>()`
 - [`guide/03-natural-typing.md`](./guide/03-natural-typing.md) — why plain BCL types just work, and what fails loud when they can't
 - [`guide/04-escape-hatches.md`](./guide/04-escape-hatches.md) — `Safe`, `Invoke`, `Probe`, `Introspect`, `Fields` for the raw cases
+- [`guide/05-wire-json.md`](./guide/05-wire-json.md) — building game objects the way the game does: the JSON seam + checked object literals
 - [`guide/06-repl.md`](./guide/06-repl.md) — the in-game C# REPL over `telnet 127.0.0.1`
 - [`guide/07-full-leverage.md`](./guide/07-full-leverage.md) — composing it all, and the honest limits map
 

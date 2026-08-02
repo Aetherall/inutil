@@ -133,4 +133,5 @@ silent-probe. Reach for raw `Fields`/`Invoke` only for the irreducible cases at 
 - ✅ `Invoke`/`Fields` reach methods/fields by name; `Probe`/`Introspect` inspect suspect handles
 - ✅ you know the honest limits: "plausibly live" ≠ use-after-free; `Fields` misses are silent by design
 
-**Next → [6. The REPL](./06-repl.md)** — experimenting against the running game with no compile-deploy loop.
+**Next → [5. Wire JSON](./05-wire-json.md)** — the typed alternative to by-name writes: building game objects
+the way the game builds them, from checked object literals.
