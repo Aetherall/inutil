@@ -76,4 +76,18 @@ for a in "Build/ToyGame.exe" "Build/GameAssembly.dll" "Build/ToyGame_Data/il2cpp
   f="$WINEPREFIX/drive_c/$a"
   if [ -f "$f" ]; then printf '   \342\234\223 %s  %s\n' "$(du -h "$f" | cut -f1)" "$a"; else echo "   ✗ MISSING: $a"; ok=0; fi
 done
-[ "$ok" = 1 ] && echo ">> SUCCESS — GameAssembly.dll + global-metadata.dat ready at $WINEPREFIX/drive_c/Build" || { echo ">> build did not produce all artifacts; see $WINEPREFIX/drive_c/build.log" >&2; exit 1; }
+
+# THIS RUN must have succeeded — not merely "a player exists on disk". The artifact check alone passes on the
+# STALE player left by the last good build, so a compile error (Unity: "Aborting batchmode due to failure: Scripts
+# have compiler errors") exited 0 and every downstream step — setup-bepinex, setup-melon, both in-game gates — then
+# ran green against a game that did not contain the change under test. A silent no-op that reports success is worse
+# than a red build: it makes the gates lie. $LOG is truncated at the top of this script, so `result` is this run's.
+case "$result" in
+  *Success*) ;;
+  *) echo "!! build did NOT succeed (${result:-no result marker}) — any artifacts above are STALE, from an earlier build." >&2
+     grep -a 'error CS' "$LOG" | sort -u | head -20 >&2
+     echo "   see $LOG" >&2
+     ok=0 ;;
+esac
+
+[ "$ok" = 1 ] && echo ">> SUCCESS — GameAssembly.dll + global-metadata.dat ready at $WINEPREFIX/drive_c/Build" || { echo ">> build did not produce a fresh, complete player; see $WINEPREFIX/drive_c/build.log" >&2; exit 1; }
