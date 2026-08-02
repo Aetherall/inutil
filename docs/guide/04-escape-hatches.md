@@ -1,6 +1,6 @@
 # 4. Escape hatches — by-name reach and fault safety
 
-*For the cases the typed path can't reach. Previous: [3. Natural typing](./03-natural-typing.md) · Next: [6. The REPL](./06-repl.md).*
+*For the cases the typed path can't reach. Previous: [3. Natural typing](./03-natural-typing.md) · Next: [5. Wire JSON](./05-wire-json.md).*
 
 ## When you're here
 
@@ -120,6 +120,50 @@ int? level = Fields.GetNullable<int>(obj, "_level");  // reads ref-bearing/Nulla
 `Fields` handles the value-layout hazards (ref-bearing value fields, `Nullable`) that Il2CppInterop's own
 `proxy.Field` misreads.
 
+**A miss is silent, so check the result when you're not probing.** `Set*` returns `false` when the field
+isn't there. Discarding that is how a renamed field on the next game build becomes a mod that quietly does
+nothing:
+
+```csharp
+if (!Fields.SetString(session, "_locationTime", wt.Time))
+    Log.LogError("session._locationTime not found — the field was renamed; the guard below will still throw");
+```
+
+## Getter-only property? Look for its backing field first
+
+The single most common reason to reach for `Fields` is a property the game exposes **read-only** —
+`public string LocationTime { get; }`. There is usually a typed way in, and it is easy to miss.
+
+An auto-property is backed by a compiler-generated field, `<LocationTime>k__BackingField`. Il2CppInterop
+renders that field as **its own property, with both accessors** — so one storage surfaces as *two* proxy
+members: the read-only property, and a settable twin whose name is the backing field with the angle brackets
+sanitized away:
+
+```csharp
+// instead of — stringly-typed, silent on a miss, angle brackets and all:
+Fields.SetString(session, "<LocationTime>k__BackingField", wt.Time);
+
+// prefer — typed, compile-checked, breaks loudly if the game renames the property:
+session._LocationTime_k__BackingField = wt.Time;
+```
+
+**Confirm the spelling before relying on it.** The `<X>k__BackingField` → `_X_k__BackingField` sanitization
+is a convention these proxies follow consistently, not a guarantee — check the type's real surface:
+
+```sh
+surface-query --methods <Type>     # lists get_/set_ accessors under their actual names
+```
+
+Two caveats worth holding:
+
+- **It is still a read-only member.** The game declared it not-writable; code elsewhere may assume nothing
+  writes it. A typed backing-field write is *safer to author* than a by-name one, not more *legitimate*. When
+  the type has a real setter, constructor, or wire form, use that instead.
+- **If the type is a wire DTO** — one the game only ever deserializes — you are probably hand-minting an
+  object that should be built from JSON. See [5. Wire JSON](./05-wire-json.md); that chapter's rule is: if
+  you find yourself writing read-only members by name on a type the game only deserializes, build it on the
+  wire side instead. Backing-field writes are for *live* objects with no wire form.
+
 ## Prefer the typed face when you can
 
 Raw `Fields`/`Invoke` are the *substrate*. When the type **is** known at author time, write the seamless
@@ -129,6 +173,7 @@ silent-probe. Reach for raw `Fields`/`Invoke` only for the irreducible cases at 
 ## Checkpoint
 
 - ✅ you know these are escape hatches — typed faces first, by-name only when you must
+- ✅ for a getter-only property you check for the settable `_X_k__BackingField` twin before reaching for `Fields`
 - ✅ `Safe.Run` turns a would-be crash into an `Ok`/`Faulted`/`Threw` verdict (and its taint caveat)
 - ✅ `Invoke`/`Fields` reach methods/fields by name; `Probe`/`Introspect` inspect suspect handles
 - ✅ you know the honest limits: "plausibly live" ≠ use-after-free; `Fields` misses are silent by design

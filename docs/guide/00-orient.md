@@ -28,7 +28,7 @@ On top of those three sit the tools you reach for less often, but which unlock t
 | Face | For | Covered in |
 |---|---|---|
 | `Safe` | calling into the game without a crash taking down the process (catches hardware faults, not just managed exceptions) | [4. Escape hatches](./04-escape-hatches.md) |
-| `Invoke` · `Probe` · `Introspect` · `Fields` | reaching a method/field **by name** when you don't have a typed proxy for it (erased handles, unknown-at-author-time types) | [4. Escape hatches](./04-escape-hatches.md) |
+| `Invoke` · `Probe` · `Introspect` · `Fields` | reaching a method/field **by name** when you don't have a typed proxy for it (erased handles, unknown-at-author-time types) — and the typed backing-field twin to try *before* going by name | [4. Escape hatches](./04-escape-hatches.md) |
 | `Json` · `Wire` | building a game object the way the game does — from its **wire JSON**, through the game's own converters — instead of `new` + by-name field writes | [5. Wire JSON](./05-wire-json.md) |
 | the **REPL** | poking at the live game from a `telnet` prompt while it runs | [6. REPL](./06-repl.md) |
 
@@ -83,7 +83,9 @@ you reach it, and [7. Full leverage](./07-full-leverage.md) collects them into o
 - The engine is validated in-game under **both** BepInEx and MelonLoader, at full parity.
 - This is the `v2-rewrite` branch: a few v1 capabilities aren't re-ported yet. They're listed in
   [reference/limits.md](../reference/limits.md); the guide marks anything roadmap where it comes up.
-- There's **no packaged release yet** — today you build inutil from this repo and deploy the DLLs beside
-  your loader. The next chapter walks that, step by step. (A packaged distribution is roadmap.)
+- There's **no published release yet**, but there is a bundle: `tools/pack.sh` produces the deployable
+  per-loader trees + the runnable CLIs, including a game-free mode that needs no provisioned game. What's
+  missing is a publish channel, so today you still build from this repo and deploy the DLLs beside your
+  loader — the next chapter walks that, step by step. See [reference/packaging.md](../reference/packaging.md).
 
 **Next → [1. Setup & your first mod](./01-setup-first-mod.md).**

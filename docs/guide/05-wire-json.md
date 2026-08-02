@@ -117,7 +117,26 @@ When a type has a wire form, reach for `Json.To<T>` before `Fields.Set*`. The ru
 > If you find yourself writing read-only members by name on a type the game only ever deserializes, you are
 > hand-minting a wire object. Build it on the wire side instead.
 
-`Fields` stays the right tool for live game objects with no wire form — see [chapter 4](./04-escape-hatches.md).
+### …but only for *construction*
+
+This chapter builds objects. **Mutating one the game already owns is a different problem** — a live session,
+a view model, a singleton — and no amount of wire JSON helps: there is nothing to deserialize *into*, and
+replacing the instance is usually wrong because the game holds the reference.
+
+That case shows up wearing the same disguise (a getter-only property), so it's easy to reach for the wrong
+tool:
+
+```csharp
+// CONSTRUCTION — a wire DTO the game would normally receive as JSON:
+var scheme = Json.To<Game.ProductionScheme>(new { areaType = area, continuous = true });
+
+// MUTATION — patching a live object the game already holds:
+session._LocationTime_k__BackingField = wt.Time;      // the typed backing-field twin, chapter 4
+```
+
+The tell is ownership, not shape: if the object came from the game and the game still points at it, you are
+mutating. See [4. Escape hatches → getter-only property?](./04-escape-hatches.md) for the typed way to do
+that, and prefer a real setter or a proper factory over either when the type offers one.
 
 ## Checkpoint
 
