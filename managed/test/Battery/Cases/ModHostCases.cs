@@ -116,6 +116,99 @@ public static class ModHostCases
             return $"compiled Hook<Game>.SetInventory(List<string>): baseline +{dBase}, hooked +{dHook} (engine read+append+write), teardown +{dAfter} ({removed} sub removed)";
         });
 
+        // NON-GENERIC Task through the ergonomic tier — the shape a consumer hit and worked around, never tested.
+        //
+        // WHY IT WAS MISSING. Game::Commit/Suppress were added to the fixture FOR this test (their comments say so:
+        // "a forwarding hook lets the +7 apply", "a suppressing hook skips the +99") and only their SIGNATURE was ever
+        // asserted (TaskFlipCases: "Commit returns natural Task"). Meanwhile OpenTarkov's offline dropped three sites
+        // to the raw HookContext tier citing "v2's ergonomic return-marshalling can't materialize a Task return
+        // (MissingMethodException: Constructor on type 'System.Threading.Tasks.Task' not found)". That error is real
+        // but it is the UNFLIPPED case — HookMatch.ValidateReturn rejects exactly that and PASSES a flipped Task — and
+        // the return-flip has since landed. Nothing proved the flipped shape actually dispatches, so the workaround
+        // outlived its reason unchallenged. This is that proof, or its refutation.
+        //
+        // BOTH DIRECTIONS, because they exercise different halves of the Task bridge:
+        //   Commit   -> Proceed<Task>()          FORWARD: the game's own il2cpp task round-trips by identity (+7 lands)
+        //   Suppress -> Task.CompletedTask       SUPPRESS: a mod-FABRICATED managed Task must be handed to the game as
+        //                                        an il2cpp task with no result to carry — the non-generic write path
+        //                                        (a Task`1<bool> upcast), which nothing else reaches. (+99 must NOT land)
+        //
+        // Score is the oracle in both, so the assertion never depends on how the Task itself surfaces; and the
+        // UNHOOKED baselines run first, so a hook that silently failed to bind cannot pass this vacuously.
+        suite.Add("modhost.hook.nongeneric-task", () =>
+        {
+            string src = """
+                using Inutil;
+                using ToyGame;
+                using System.Threading.Tasks;
+                public sealed class InutilTaskHook : Hook<Game>
+                {
+                    Task Commit()   => Proceed<Task>();      // forward to the original: its +7 must land
+                    Task Suppress() => Task.CompletedTask;   // never Proceed: the original's +99 must NOT land
+                }
+                """;
+
+            object game = Instance();
+            MethodInfo commit = Proxy("Game", "Commit"), suppress = Proxy("Game", "Suppress");
+            Check.True(commit.ReturnType == typeof(System.Threading.Tasks.Task),
+                $"Game::Commit returns '{commit.ReturnType.FullName}', not a managed Task — the interop patch did not flip "
+                + "the non-generic Task return, so this case would be testing the wrong thing");
+
+            // Baselines, UNHOOKED: each raises Score by its own constant. If these do not hold, the target is not
+            // what we think and nothing below means anything.
+            int b0 = Score(game); AwaitTask(commit.Invoke(game, null), "baseline Commit");
+            int dCommitBase = Score(game) - b0;
+            Check.True(dCommitBase == 7, $"baseline Commit raised Score by {dCommitBase}, expected 7");
+            int b1 = Score(game); AwaitTask(suppress.Invoke(game, null), "baseline Suppress");
+            int dSuppressBase = Score(game) - b1;
+            Check.True(dSuppressBase == 99, $"baseline Suppress raised Score by {dSuppressBase}, expected 99");
+
+            if (!TryCompileAndLoad("inutiltaskhook", src, out Assembly modAsm, out ModContext alc)) return null;
+            Check.True(modAsm.GetType("InutilTaskHook") is not null, "the compiled non-generic-Task hook did not load into the ModContext");
+
+            int dCommitHooked, dSuppressHooked, removed;
+            try
+            {
+                int wired = global::Inutil.Mods.Discover(modAsm);
+                Check.True(wired == 2, $"Discover wired {wired} hook method(s), expected 2 (Game::Commit, Game::Suppress)");
+
+                // FORWARD. Proceed<Task>() must run the original and hand its task back, so +7 still lands.
+                int s1 = Score(game);
+                object? forwarded = commit.Invoke(game, null);
+                Check.True(forwarded is System.Threading.Tasks.Task,
+                    $"hooked Commit returned '{forwarded?.GetType().FullName ?? "null"}', not a managed Task");
+                AwaitTask(forwarded, "hooked Commit");
+                dCommitHooked = Score(game) - s1;
+                Check.True(dCommitHooked == 7,
+                    $"hooked Commit raised Score by {dCommitHooked}, expected 7 — Proceed<Task>() did not run the original");
+
+                // SUPPRESS. The mod returns its own completed Task and never Proceeds, so +99 must NOT land — and the
+                // fabricated managed Task still has to reach the game as a well-formed il2cpp task.
+                int s2 = Score(game);
+                object? fabricated = suppress.Invoke(game, null);
+                Check.True(fabricated is System.Threading.Tasks.Task,
+                    $"hooked Suppress returned '{fabricated?.GetType().FullName ?? "null"}', not a managed Task");
+                AwaitTask(fabricated, "hooked Suppress");
+                dSuppressHooked = Score(game) - s2;
+                Check.True(dSuppressHooked == 0,
+                    $"hooked Suppress raised Score by {dSuppressHooked}, expected 0 — the original ran despite the hook never calling Proceed");
+            }
+            finally
+            {
+                removed = global::Inutil.Mods.RemoveAll(alc);
+                alc.Unload();
+            }
+
+            // Teardown restores both: the +99 comes back, which is also the proof the suppression above was the hook
+            // and not the method having stopped working.
+            int s3 = Score(game); AwaitTask(suppress.Invoke(game, null), "post-teardown Suppress");
+            int dAfter = Score(game) - s3;
+            Check.True(dAfter == 99, $"after teardown Suppress raised Score by {dAfter}, expected 99 — the mod's hook was not removed");
+
+            return $"compiled Hook<Game> over non-generic Task: Commit +{dCommitBase}->+{dCommitHooked} (forwarded via Proceed<Task>), "
+                 + $"Suppress +{dSuppressBase}->+{dSuppressHooked} (fabricated Task, original skipped), teardown +{dAfter} ({removed} sub removed)";
+        });
+
         // CONTAINER INTERFACE WIDENING at the ergonomic tier (HookMatch Tier 1, the FIRST fallback matcher end-to-end):
         // a hook may spell a READ-ONLY supertype (IReadOnlyList<int>) of the flipped proxy's concrete container param
         // (List<int>) and STILL bind — the matcher widens List -> IReadOnlyList (same element type, an engine-registered
@@ -686,6 +779,17 @@ public static class ModHostCases
     {
         PropertyInfo? p = game.GetType().GetProperty("Score");
         return p is not null ? (int)p.GetValue(game)! : 0;
+    }
+
+    // Drive a returned Task to completion, BOUNDED. Every Task in this fixture is already completed (the game
+    // returns Task.CompletedTask, the mod fabricates one), so a wait that actually blocks means the bridge handed
+    // back a task nothing will ever complete — which is a failure, not a reason to hang the battery.
+    static void AwaitTask(object? returned, string what)
+    {
+        Check.True(returned is System.Threading.Tasks.Task, $"{what}: expected a Task, got {returned?.GetType().FullName ?? "null"}");
+        var t = (System.Threading.Tasks.Task)returned!;
+        Check.True(t.Wait(TimeSpan.FromSeconds(5)), $"{what}: the returned Task never completed (5s) — the Task bridge handed back a promise nobody drives");
+        Check.True(!t.IsFaulted, $"{what}: the returned Task faulted: {t.Exception?.InnerException?.GetType().Name}: {t.Exception?.InnerException?.Message}");
     }
 
     static int Call(MethodInfo mi, object game, int arg)

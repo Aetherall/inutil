@@ -211,10 +211,30 @@ Until those land, keep them where they are — one named helper per repo beats t
 
 ## 8. When you have to drop to the raw hook tier
 
-`clientfix/ForceLocalRaid.cs:11-17` documents the boundary accurately and is worth reading as the model for how to
-record one: a `Task`-returning method cannot be *replaced* through `Hook<T>` + `Proceed` (it throws
-`MissingMethodException` on the `Task` constructor), so a `Hooks.Pre` that only rewrites an input argument and never
-touches the return slot is the correct shape. Note what makes it safe — the original's `Task` flows back untouched
-because the hook never writes the return. A raw hook that *does* need to transform the result has no such escape.
+**A `Task` return is NOT one of those cases any more — re-patch (§0) and use `Hook<T>`.**
+`clientfix/ForceLocalRaid.cs:11-17` records the boundary accurately for the state it was written in, and it is worth
+reading as the model for how to record one — but its precondition is gone. The
+`MissingMethodException: Constructor on type 'System.Threading.Tasks.Task' not found` it cites is what an
+**unflipped** il2cpp Task proxy does; the interop patch now flips those returns (check with `surface-query --methods`
+— a natural `System.Threading.Tasks.Task` and no `[raw il2cpp]` tag), and both directions are proven in a booted
+game under both loaders (`modhost.hook.nongeneric-task`):
 
-This is inutil's most consumer-visible ergonomic limit (GAPS.md G8).
+```csharp
+Task Commit()   => Proceed<Task>();      // forward: the original runs, its task round-trips  (+7 lands)
+Task Suppress() => Task.CompletedTask;   // replace: the original is skipped, your task reaches the game (+99 does not)
+```
+
+So both shapes work ergonomically — forwarding *and* transforming the result. The tell that this was stale was
+already in the consumer's own tree: `GamePrepareGate` does `Proceed<Task<IResult>>(isRaid)` twelve lines above
+`StartTutorialGate`, which drops to the raw tier citing "the same documented boundary". Generic `Task<T>` was working
+the whole time; the discriminator was flipped-vs-unflipped, never generic-vs-not.
+
+What still *does* need the raw tier: a parameter with no natural spelling. `AutoLogin`'s
+`add_OnLogin(System.Action<string,string,bool,Il2CppSystem.Action<string,double>>)` is the live example — a nested
+il2cpp delegate, so an ergonomic hook would have to name `Il2CppSystem.Action` in consumer code. `HookContext` never
+names the signature, which is the actual reason to reach for it there.
+
+Dev probes are the other legitimate use, and for different reasons: string targeting reaches types that are awkward
+to spell (`AIPlaceLogicPartisan` sits in the *empty* namespace), and `Hooks.Pre` throws when it fails to bind, which
+is what lets a probe say "I did not arm" instead of going quiet — for a diagnostic whose whole output is log lines,
+a silent non-binding hook is the worst possible failure. See `dev/HideoutPrepareProbe.cs`.

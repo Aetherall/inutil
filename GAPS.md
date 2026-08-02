@@ -8,16 +8,18 @@ distinction earned its place here: two entries in the first draft of this file w
 plausible-looking signature dump or summary line was trusted over the compiler. See "How the wrong answers happened"
 at the end — the failure modes are reusable.
 
-**Status:** G3, G4, G10, G12, G13 and G14 are closed and proven (G4 and G14 in-game under both loaders). G2 was
+**Status:** G3, G4, G10, G12, G13 and G14 are closed and proven (G4 and G14 in-game under both loaders); **G8 was never a gap** — stale since the Task return flip, now disproven in-game under both loaders. G2 was
 mis-stated and is restated below as a design question needing a decision before any code. Remaining: **G11**
 (re-diagnosed below — much smaller than first recorded, and an ordinary fix), G5's wiremap onboarding gap for
 CONSUMERS (G9 fixed inutil's own harness ordering, not a consumer's pipeline), then the ergonomic items (G6-G8).
 
-**Three entries in this file have now been wrong on first writing (G2, G11, and G14's first fix), every time because
-a plausible reading was trusted over a measurement.** G14 is the sharpest case: the probe that "confirmed" the
-diagnosis was statically typed, which silently took a different dispatch path than the containers the bug lives in,
-and the resulting fix made things *worse* while passing every offline test. The in-game battery caught it. Prefer the
-oracle that runs the real shape.
+**Four entries in this file have now been wrong on first writing (G2, G8, G11, and G14's first fix), every time
+because a plausible reading was trusted over a measurement.** G14 is the sharpest case: the probe that "confirmed"
+the diagnosis was statically typed, which silently took a different dispatch path than the containers the bug lives
+in, and the resulting fix made things *worse* while passing every offline test. G8 is the most instructive: it was
+true when written, the thing that made it false landed later, and nothing re-ran it — a fixture existed for the test,
+its comments described the test, and only the method's *signature* was ever asserted. Prefer the oracle that runs the
+real shape, and re-run the ones you inherited.
 
 **G10 and G11 were found by ACTING on [GUIDANCE.md](./GUIDANCE.md), not by reading more code** — G10 by running §0
 (re-patch) on the consumer's real overlay, G11 by taking §4's advice and then probing it in a booted game. Both were
@@ -236,19 +238,48 @@ follow the convention.
 
 ---
 
-## G8 — a `Task`-returning method cannot be replaced ergonomically
+## G8 — a `Task`-returning method cannot be replaced ergonomically — **NOT A GAP (stale since the return flip)**
 
-The most consumer-visible ergonomic limit. `Hook<T>` + `Proceed<Task>` throws
-`MissingMethodException: Constructor on type 'System.Threading.Tasks.Task' not found`, so replacing such a method
-means dropping to raw `Hooks.Pre`/`HookContext`.
+Recorded as "the most consumer-visible ergonomic limit". It is not one. The exception it cites —
+`MissingMethodException: Constructor on type 'System.Threading.Tasks.Task' not found` from `Hook<T>` +
+`Proceed<Task>` — was real, and it is the **UNFLIPPED** case. inutil's own bind-time validator has always said so
+(`Inutil.Mods.Tests`: *"ValidateReturn REJECTS managed Task vs an unflipped il2cpp Task return"* / *"passes a
+FLIPPED (managed) Task return"*). The return flip landed afterwards, and nobody re-tested.
 
-`offline/src/clientfix/ForceLocalRaid.cs:11-17` documents the workaround well, and it is sound *for that case*: a
-pre-hook that only rewrites an input argument never touches the return slot, so the original's `Task` flows back
-untouched. The limit bites when a consumer needs to **transform** the result — no ergonomic path, and the raw tier
-gives no help either.
+**Now proven both directions, both loaders** (`modhost.hook.nongeneric-task`), against a real compiled
+`Hook<Game>` in a booted game:
 
-Already in `docs/reference/limits.md`; recorded here because it is the limit this consumer hit most visibly, which
-is a data point about priority.
+```
+Commit   +7  -> +7    forwarded via Proceed<Task>()      — the original ran, its il2cpp task round-tripped
+Suppress +99 -> +0    fabricated Task.CompletedTask      — the original was skipped, the mod's own task reached the game
+teardown +99                                             — restored, so the suppression was the hook and not a dead method
+```
+
+The second line also disposes of the stronger claim in the old entry ("the limit bites when a consumer needs to
+**transform** the result"): returning a fabricated `Task` in place of the original works, which is transformation.
+
+**How it survived.** Three things pointed the same wrong way at once. The fixture methods `Game::Commit`/`Suppress`
+were added FOR this test — their comments read *"a forwarding hook lets the +7 apply"* / *"a suppressing hook skips
+the +99"* — but only their SIGNATURE was ever asserted (`TaskFlipCases`: "Commit returns natural Task"), so the
+suite looked like it covered them. The consumer's workaround comment named a real exception with a real reproduction,
+so it read as current. And the consumer had a working counter-example **in the same file** the whole time:
+`GamePrepareGate` is an ergonomic `Hook<EFT.TarkovApplication>` doing `Proceed<Task<IResult>>(isRaid)`, while
+`StartTutorialGate` twelve lines below drops to the raw tier citing "the same documented boundary". Generic
+`Task<T>` was working while bare `Task` was assumed broken — but the discriminator was never generic-vs-not, it was
+flipped-vs-not.
+
+**Consumer follow-up (not done here):** three OpenTarkov sites still take the raw tier for this reason —
+`ForceLocalRaid.InternalStartGame`, `ForceLocalRaidMode.OnReadyToStartMatchingAsync`,
+`StartTutorialGate.StartTutorial`. All three are now convertible; `StartTutorialGate` in particular collapses from
+`Skip()` + `SetReturnTask()` to simply returning its own `Task`. A fourth raw-tier site, `AutoLogin`'s
+`add_OnLogin`, is a genuinely different and still-current limit: its parameter is
+`System.Action<string,string,bool,Il2CppSystem.Action<string,double>>`, a nested il2cpp delegate with no natural
+spelling, so hooking it ergonomically drags an `Il2Cpp*` spelling back into the consumer.
+
+`docs/reference/limits.md` was right all along — it scopes the failure to *"an **unflipped** il2cpp Task proxy"* and
+notes it is now rejected at Discover. `GUIDANCE.md` §8 asserted the old limit and is corrected. The citation in
+`ForceLocalRaid.cs:14` points at `docs/guide/04-escape-hatches.md`, which contains no such boundary (that file is
+about `Safe`/`Invoke`/`Probe`/`Fields`) — a dangling reference that helped the claim look sourced.
 
 ---
 
