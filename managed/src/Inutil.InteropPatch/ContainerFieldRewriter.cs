@@ -56,10 +56,16 @@ public sealed class ContainerFieldRewriter
             { defers.Add($"{type.FullName}::{prop.Name}  (container field -> DEFER: virtual accessor needs vtable lockstep)"); continue; }
 
             // ALL-OR-NOTHING pre-check: the getter must have a body with a ret to splice before; the setter must have a
-            // single value param + a ldarg.1 to splice after. Anything else defers the whole property (never a half-flip).
+            // single value param + a load of THAT param to splice after. Anything else defers the whole property
+            // (never a half-flip).
+            //
+            // The param load is resolved through ParamFlip.LoadsParam, not a hardcoded ldarg.1: on a STATIC setter the
+            // value is ldarg.0 (there is no `this`), so the old literal check silently deferred every static container
+            // property — 529 of them in one real game, each a member a mod then meets as a raw il2cpp container. It
+            // failed safe, which is why it read as routine defer noise for so long.
             bool getterOk = getter is null || (getter.HasBody && getter.Body.Instructions.Any(i => i.OpCode == OpCodes.Ret));
             bool setterOk = setter is null || (setter.HasBody && setter.Parameters.Count == 1
-                                               && setter.Body.Instructions.Any(i => i.OpCode == OpCodes.Ldarg_1));
+                                               && setter.Body.Instructions.Any(i => ParamFlip.LoadsParam(i, setter, setter.Parameters[0])));
             if (!getterOk || !setterOk || (getter is null && setter is null))
             { defers.Add($"{type.FullName}::{prop.Name}  (container field -> DEFER: accessor shape not handleable)"); continue; }
 
@@ -81,7 +87,9 @@ public sealed class ContainerFieldRewriter
                 ILProcessor il = setter.Body.GetILProcessor();
                 MethodReference toIl2 = wrap.MarshalToIl2CppClosed(natural);
                 TypeReference il2Import = module.ImportReference(il2cppType);
-                foreach (Instruction ld in setter.Body.Instructions.Where(i => i.OpCode == OpCodes.Ldarg_1).ToArray())
+                // Same param-load rule as the pre-check — splice after every load of the VALUE param, whichever ldarg
+                // form it takes (ldarg.0 on a static setter, ldarg.1 on an instance one, or the long form).
+                foreach (Instruction ld in setter.Body.Instructions.Where(i => ParamFlip.LoadsParam(i, setter, setter.Parameters[0])).ToArray())
                 {
                     il.InsertAfter(ld, Instruction.Create(OpCodes.Castclass, il2Import));   // pushed down by the next insert
                     il.InsertAfter(ld, Instruction.Create(OpCodes.Call, toIl2));            // ld -> call ToIl2 -> castclass

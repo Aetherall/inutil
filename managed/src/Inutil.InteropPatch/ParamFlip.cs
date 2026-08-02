@@ -30,9 +30,8 @@ public static class ParamFlip
 
         // Redirect the ORIGINAL loads of the param to the (soon-to-be-filled) local. Done BEFORE inserting the
         // entry conversion, so the conversion's own `ldarg` is not itself redirected.
-        int argIndex = param.Index + (method.HasThis ? 1 : 0);
         foreach (Instruction ins in body.Instructions)
-            if (LoadsArg(ins, argIndex, param)) { ins.OpCode = OpCodes.Ldloc; ins.Operand = local; }
+            if (LoadsParam(ins, method, param)) { ins.OpCode = OpCodes.Ldloc; ins.Operand = local; }
 
         // Prepend: ldarg <param>; call ToIl2CppTyped<Natural>; castclass <il2cppType>; stloc <local>.
         ILProcessor il = body.GetILProcessor();
@@ -43,9 +42,18 @@ public static class ParamFlip
         il.InsertBefore(first, Instruction.Create(OpCodes.Stloc, local));
     }
 
-    // Does this instruction LOAD the argument at `argIndex` (positional ldarg.0-3, or ldarg/ldarg.s by param)?
+    // Does this instruction LOAD `param` of `method` (positional ldarg.0-3, or ldarg/ldarg.s by param)?
     // A reference param (container proxy) and a ref-bearing value proxy (Il2CppSystem.Nullable is a CLASS) are both
-    // loaded by ldarg, never ldarga — so this redirect covers every use.
+    // loaded by ldarg, never ldarga — so this covers every use.
+    //
+    // The ONE answer to "which ldarg is this param", public because every splice-style rewriter needs it and the
+    // copies drift: the arg index is `param.Index + (HasThis ? 1 : 0)`, so on a STATIC method the first param is
+    // ldarg.0 — the slot that holds `this` on an instance method. A rewriter that hardcodes ldarg.1 silently skips
+    // every static member (ContainerFieldRewriter did: 529 static container properties in one real game), and one
+    // that hardcodes ldarg.0 would corrupt instance methods by treating `this` as the value.
+    public static bool LoadsParam(Instruction ins, MethodDefinition method, ParameterDefinition param)
+        => LoadsArg(ins, param.Index + (method.HasThis ? 1 : 0), param);
+
     static bool LoadsArg(Instruction ins, int argIndex, ParameterDefinition param) => ins.OpCode.Code switch
     {
         Code.Ldarg_0 => argIndex == 0,
