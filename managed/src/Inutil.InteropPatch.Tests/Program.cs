@@ -413,49 +413,37 @@ try
                 && rally.SetMethod.Body.Instructions.All(i => i.OpCode != OpCodes.Ldarg_1));
             Check("...and the static getter still reads through the null-aware tail (BoxedToNullable)",
                 rally.GetMethod!.Body.Instructions.Any(i => i.Operand is MethodReference gmr && gmr.Name == "BoxedToNullable"));
-            Check("idempotent: re-running the accessor pass over the static Nullable flips 0",
+            // REF-BEARING static rung (Game::Vault, a static Loadout?). System.Nullable<class> is illegal, so the
+            // natural spelling is the BARE proxy and the write goes through the dedicated static ref helper — the
+            // path that rebuilds the Nullable box so an embedded managed reference is copied GC-aware rather than
+            // blitted into the static-fields block.
+            var vault = statGame.Properties.First(p => p.Name == "Vault");
+            Check("STATIC ref-bearing Nullable (Game::Vault) flips to the bare Loadout proxy",
+                vault.PropertyType.FullName.EndsWith("Loadout", StringComparison.Ordinal)
+                && !vault.PropertyType.FullName.Contains("Nullable", StringComparison.Ordinal),
+                vault.PropertyType.FullName);
+            Check("...and its setter calls WriteNullableRefStaticField from ldarg.0",
+                vault.SetMethod!.IsStatic
+                && vault.SetMethod.Body.Instructions.Any(i => i.Operand is MethodReference vmr && vmr.Name == "WriteNullableRefStaticField")
+                && vault.SetMethod.Body.Instructions.Any(i => i.OpCode == OpCodes.Ldarg_0)
+                && vault.SetMethod.Body.Instructions.All(i => i.Operand is not MethodReference bad
+                    || bad.Name is not ("WriteNullableField" or "WriteNullableRefField" or "WriteNullableStaticField")),
+                $"calls: [{string.Join(",", vault.SetMethod.Body.Instructions.Select(i => (i.Operand as MethodReference)?.Name).Where(n => n is not null))}]");
+            Check("...and its static getter reads through BoxedToRefNullable",
+                vault.GetMethod!.Body.Instructions.Any(i => i.Operand is MethodReference vgm && vgm.Name == "BoxedToRefNullable"));
+
+            Check("idempotent: re-running the accessor pass over the static Nullables flips 0",
                 new NullableFieldRewriter().RewriteModule(stat).Flipped == 0);
             // Scoped to the STATIC members: this block runs only the two accessor passes, so returns/params are
             // legitimately still unflipped here. The whole-fixture "zero residual" claim belongs where the FULL
             // pass set runs — asserted on PatchDirectory's own result below.
             var statAudit = ResidualAudit.Scan(stat);
-            Check("no residual left for either STATIC member (Game::Rally, Game::Squad)",
+            Check("no residual left for any STATIC member (Game::Rally, ::Vault, ::Squad)",
                 !statAudit.Any(x => x.Member.EndsWith("::Rally", StringComparison.Ordinal)
+                                    || x.Member.EndsWith("::Vault", StringComparison.Ordinal)
                                     || x.Member.EndsWith("::Squad", StringComparison.Ordinal)),
-                $"[{string.Join(" | ", statAudit.Where(x => x.Member.Contains("Rally", StringComparison.Ordinal) || x.Member.Contains("Squad", StringComparison.Ordinal)).Select(x => x.Member + " => " + x.Why))}]");
+                $"[{string.Join(" | ", statAudit.Where(x => x.Member.Contains("Rally", StringComparison.Ordinal) || x.Member.Contains("Vault", StringComparison.Ordinal) || x.Member.Contains("Squad", StringComparison.Ordinal)).Select(x => x.Member + " => " + x.Why))}]");
             stat.Dispose();
-        }
-
-        // STATIC + REF-BEARING Nullable setter — the one rung with NO fixture member. Game::Rally covers static +
-        // value; a static Loadout? field would cover this, but adding one costs a full game rebuild + both loader
-        // reprovisions, so the shape is manufactured here by taking a REAL Il2CppInterop ref-bearing accessor body
-        // (Player::<Backpack>k__BackingField) and making it static. A hand-built body would prove nothing about the
-        // real generator's output; this proves the pass picks the STATIC + REF helper and the arg-0 value slot.
-        //
-        // HONEST LIMIT: this is an IL-shape assertion only. Unlike every other rung, WriteNullableRefStaticField's
-        // RUNTIME behaviour (box rebuild + il2cpp_field_static_set_value carrying an embedded string reference) is
-        // NOT proven in-game, because no fixture member reaches it. Treat it as unverified until one exists.
-        {
-            var statModule = ModuleDefinition.ReadModule(Copy("Assembly-CSharp.dll"),
-                new ReaderParameters { InMemory = true, AssemblyResolver = resolver });
-            var stPlayer = statModule.GetTypes().First(t => t.Name == "Player");
-            var stProp = stPlayer.Properties.First(p => p.Name.Contains("Backpack", StringComparison.Ordinal)
-                                                        && p.Name.Contains("BackingField", StringComparison.Ordinal));
-            stProp.SetMethod!.IsStatic = true;      // same real body, now a static ref-bearing accessor
-
-            new NullableFieldRewriter().RewriteModule(statModule);
-            Check("static REF-BEARING Nullable setter uses WriteNullableRefStaticField",
-                stProp.SetMethod.Body.Instructions.Any(i => i.Operand is MethodReference smr
-                    && smr.Name == "WriteNullableRefStaticField"),
-                $"calls: [{string.Join(",", stProp.SetMethod.Body.Instructions.Select(i => (i.Operand as MethodReference)?.Name).Where(n => n is not null))}]");
-            Check("...and never the instance or value-rung write helper",
-                stProp.SetMethod.Body.Instructions.All(i => i.Operand is not MethodReference wmr
-                    || wmr.Name is not ("WriteNullableField" or "WriteNullableRefField" or "WriteNullableStaticField")));
-            Check("...and takes the value from ldarg.0, with the property flipped to the BARE proxy",
-                stProp.SetMethod.Body.Instructions.Any(i => i.OpCode == OpCodes.Ldarg_0)
-                && stProp.PropertyType.FullName.EndsWith("Loadout", StringComparison.Ordinal),
-                stProp.PropertyType.FullName);
-            statModule.Dispose();
         }
 
         // Round-trip: the rewritten module must WRITE and RE-READ with the flip intact (structurally-sound IL).

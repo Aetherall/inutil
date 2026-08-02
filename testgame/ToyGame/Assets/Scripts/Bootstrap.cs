@@ -119,6 +119,8 @@ public class Bootstrap : MonoBehaviour
         // STATIC accessor shapes (Game::Rally — Nullable; Game::Squad — container). Rooted so IL2CPP keeps the
         // static accessors the two passes stumble on.
         Game.Rally = new Vec3(_tick, _tick, _tick); Vec3? rally = Game.Rally;
+        Game.Vault = new Loadout { Gold = _tick, Owner = "vault" }; Loadout? vault = Game.Vault;
+        int vaultGold = Game.PeekVaultGold(); string vaultOwner = Game.PeekVaultOwner();
         Game.Squad = new List<int> { 1, 2, _tick }; List<int> squad2 = Game.Squad;
         float rallyX = Game.PeekRallyX(); int squadN = Game.PeekSquadN();
 

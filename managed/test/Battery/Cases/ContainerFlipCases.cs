@@ -318,7 +318,29 @@ public static class ContainerFlipCases
             Check.True(Math.Abs(none - (-1f)) < 0.001f,
                 $"Rally=null then PeekRallyX()={none}, expected -1 — the EMPTY static write did not clear hasValue");
             Check.True(rally.GetValue(null) is null, "get_Rally should be null after an empty static write");
-            return $"static Game::Rally round-trip: present(X=5) and empty(-1) through il2cpp_field_static_set_value";
+
+            // REF-BEARING static rung (Game::Vault, a static Loadout?) — the path that stores a value type carrying
+            // a REAL string reference into the class's static-fields block. Owner surviving is what separates
+            // WriteNullableRefStaticField's GC-aware box rebuild from a raw byte blit; nothing else reaches it.
+            PropertyInfo vault = RequireProperty(gameT, "Vault");
+            Check.True(!(vault.PropertyType.FullName ?? "").Contains("Nullable", StringComparison.Ordinal),
+                $"{typeName}::Vault is '{vault.PropertyType.FullName}' — the ref-bearing static Nullable did not flip to the bare proxy");
+
+            object player = ConstructPlayer(FindProxyType("Player", out _));
+            object loadout = player.GetType().GetMethod("MakeLoadout")!.Invoke(player, new object?[] { 42 })!;
+            vault.SetValue(null, loadout);                                // static write, present, ref-bearing
+            int gold = Convert.ToInt32(gameT.GetMethod("PeekVaultGold")!.Invoke(null, null));
+            string? owner = (string?)gameT.GetMethod("PeekVaultOwner")!.Invoke(null, null);
+            Check.True(gold == 42, $"Vault=Loadout(42) then PeekVaultGold()={gold}, expected 42 — the ref-bearing static write stored the wrong inner value");
+            Check.True(!string.IsNullOrEmpty(owner),
+                $"PeekVaultOwner()='{owner ?? "null"}' — the embedded string reference did not survive into static storage (GC-aware copy failed)");
+            Check.True(vault.GetValue(null) is not null, "get_Vault returned null for a PRESENT ref-bearing static Nullable");
+
+            vault.SetValue(null, null);                                   // static write, empty
+            Check.True(Convert.ToInt32(gameT.GetMethod("PeekVaultGold")!.Invoke(null, null)) == -1
+                       && vault.GetValue(null) is null,
+                "writing null to the ref-bearing static Nullable did not clear it");
+            return $"static round-trip: Rally present(X=5)/empty(-1); Vault present(Gold=42, Owner='{owner}')/empty — via il2cpp_field_static_set_value";
         });
 
         // VIRTUAL Nullable accessors (Entity/Boss::Beacon, ::Cache). get_X and set_X are separate vtable slots, so

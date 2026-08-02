@@ -205,9 +205,17 @@ namespace ToyGame
         // to splice after, which a static setter does not have (it defers, safely but silently). ToyGame had NO
         // static field of either shape, so its zero-residual result meant "shape absent", not "shape covered" — the
         // machine check could not see either gap. These two put the shapes in front of it.
-        public static Vec3?     Rally;                                                      // STATIC Nullable field   -> the miscompile case (must DEFER until a static write helper exists)
+        public static Vec3?     Rally;                                                      // STATIC Nullable field, VALUE element      -> WriteNullableStaticField
+        // STATIC Nullable field, REF-BEARING element — the rung whose runtime behaviour was IL-shape-verified only.
+        // Loadout carries a real string reference INSIDE the value type, so this is the one shape that exercises
+        // WriteNullableRefStaticField's box rebuild storing an embedded reference into the class's static-fields
+        // block via il2cpp_field_static_set_value. Reading Owner back intact is what distinguishes a GC-aware copy
+        // from a raw byte blit; nothing else in the fixture reaches that path.
+        public static Loadout?  Vault;                                                      // STATIC Nullable field, REF-BEARING element -> WriteNullableRefStaticField
         public static List<int> Squad  = new List<int> { 1, 2, 3 };                          // STATIC container field  -> the ldarg.1 case (NB: `Roster` is taken by a method below)
         public static float PeekRallyX()  => Rally.HasValue ? Rally.Value.X : -1f;           // independent read-backs (static storage)
+        public static int    PeekVaultGold()  => Vault.HasValue ? Vault.Value.Gold : -1;
+        public static string PeekVaultOwner() => Vault.HasValue ? Vault.Value.Owner : null;  // the embedded string ref — proves the GC-aware copy
         public static int   PeekSquadN()  => Squad != null ? Squad.Count : -1;
         public int PeekHighScore() => HighScore;                                            // independent read-back (static storage, shared across instances)
         public int PeekBonus()     => Bonus.HasValue ? Bonus.Value : -1;
