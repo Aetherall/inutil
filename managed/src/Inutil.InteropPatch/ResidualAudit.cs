@@ -86,8 +86,14 @@ public static class ResidualAudit
                              bool staticFieldBackedSetter = false)
     {
         TypeReference? elem = (type as GenericInstanceType)?.GenericArguments.FirstOrDefault();
+        // NB — this arm is now COARSE. Virtual Nullable RETURNS and virtual Nullable ACCESSORS both flip in lockstep
+        // today, so a virtual residual is no longer explained by "virtual" alone: the only legitimate reasons left
+        // are the planner's slot gates (ExternalRoot — the slot's true root is a base we cannot see; or a
+        // FRAMEWORK-module root we never flip). A virtual member deferred for any OTHER reason is a hole this arm
+        // will wrongly report as expected. Tightening it means resolving the slot root here, the planner's job —
+        // until then, treat a rising virtual count as something to investigate, not to accept.
         if (virt)
-            return new(module, member, $"{kind}: virtual — deferred, needs the vtable/interface lockstep", false);
+            return new(module, member, $"{kind}: virtual — expected only if its slot root is external/framework; verify", false);
         if (staticFieldBackedSetter)
             return new(module, member, $"{kind}: static field-backed setter — deferred, no static-field write helper", false);
         if (elem is not null && elem.IsGenericParameter)

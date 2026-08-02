@@ -30,10 +30,15 @@ namespace Inutil.InteropPatch;
 // hand-build the boxed Nullable through ValueTypeBridge.RefToNullable — i.e. hand-perform the very splice below.
 // (Get-ONLY method-backed properties flipped fine all along: with no setter, the pre-check passed vacuously.)
 //
-// Guardrails: NON-VIRTUAL only (a virtual accessor is a vtable/interface slot needing the same lockstep as virtual
-// returns — deferred); ALL-OR-NOTHING per property (every present accessor is pre-checked handleable, or the whole
-// property defers — a half-flip is invalid IL); GAME-scoped. IDEMPOTENT: a flipped property is no longer typed il2cpp
-// Nullable, so the top filter skips it — a re-run flips 0.
+// VIRTUAL accessors are a second phase in this same pass (RewriteVirtual). Their mechanics are identical — a virtual
+// accessor is always method-backed, since Il2CppInterop's field wrappers are never virtual — but they need vtable
+// LOCKSTEP, and of a wider kind than any other family here: a property is THREE things that must agree (get_, set_,
+// the property's own type) across EVERY type in the override graph, and get_X / set_X are SEPARATE planner slots.
+//
+// Guardrails: ALL-OR-NOTHING per property (every present accessor is pre-checked handleable, or the whole property
+// defers — a half-flip is invalid IL, or worse, loads and misbehaves only when touched); a STATIC field-backed setter
+// defers (no static-field write helper — see below); GAME-scoped. IDEMPOTENT: a flipped property is no longer typed
+// il2cpp Nullable, so neither phase's filter matches it — a re-run flips 0.
 public sealed class NullableFieldRewriter
 {
     static readonly CorrespondenceRegistry _families = Families.Default();
@@ -67,8 +72,9 @@ public sealed class NullableFieldRewriter
             TypeReference targetType = refBearing ? t : wrap.SysNullableOf(t);
 
             MethodDefinition? getter = prop.GetMethod, setter = prop.SetMethod;
-            if ((getter?.IsVirtual ?? false) || (setter?.IsVirtual ?? false))
-            { defers.Add($"{type.FullName}::{prop.Name}  (nullable field -> DEFER: virtual accessor)"); continue; }
+            // A virtual accessor belongs to the VIRTUAL phase below (vtable lockstep across the override graph) —
+            // skipped silently here, not deferred, or every such property would report a defer it no longer has.
+            if ((getter?.IsVirtual ?? false) || (setter?.IsVirtual ?? false)) continue;
 
             // ALL-OR-NOTHING pre-check: every present accessor must be handleable, or the whole property defers (a
             // half-flipped property leaves inconsistent get/set/property types — invalid IL). A getter is handle-able
@@ -155,12 +161,100 @@ public sealed class NullableFieldRewriter
                 + (refBearing ? t.Name + " (nullable field, ref-bearing)" : "System.Nullable<" + t.Name + "> (nullable field)"));
         }
 
-        return new RewriteResult(flipped, flips, defers);
+        // ── VIRTUAL accessors: the same two mechanics, in vtable LOCKSTEP ───────────────────────────────────
+        RewriteResult virt = RewriteVirtual(module);
+        return new RewriteResult(flipped + virt.Flipped, flips.Concat(virt.Flips).ToList(), defers.Concat(virt.Defers).ToList());
+    }
+
+    // A virtual Nullable accessor is always METHOD-backed (Il2CppInterop's field wrappers are never virtual), so the
+    // mechanics are the ones the non-virtual arm already proves. What virtual adds is LOCKSTEP — and of a wider kind
+    // than any other family needs here: a property is THREE things that must agree (get_, set_, the property's own
+    // type), across EVERY type in the override graph. VirtualSlotPlanner enforces lockstep within one slot, but
+    // get_X and set_X are SEPARATE slots, so this method couples them: a property flips only if BOTH its accessor
+    // slots flip, and then every property over those slots flips together. Flipping one slot alone would leave
+    // get_Beacon returning System.Nullable<Vec3> while set_Beacon still takes the il2cpp one — a property whose
+    // accessors disagree, which still LOADS and misbehaves only when touched.
+    RewriteResult RewriteVirtual(ModuleDefinition module)
+    {
+        var flips = new List<string>();
+        var defers = new List<string>();
+        int flippedProps = 0;
+        if (CecilProjector.IsFrameworkAssembly(module.Assembly.Name.Name)) return new RewriteResult(0, flips, defers);
+
+        var projector = new CecilProjector();
+        var wrap = new WrapHelpers(module);
+        var family = new NullableAccessorFamily(module, wrap);
+
+        var candidates = module.GetTypes().SelectMany(t => t.Methods)
+            .Where(NullableAccessorFamily.IsCandidate)
+            .Select(m => (ISlotMethod)projector.Method(m))
+            .ToList();
+        if (candidates.Count == 0) return new RewriteResult(0, flips, defers);
+
+        // Plan every accessor slot, then index each accessor METHOD by the slot that owns it, so a property can ask
+        // "did my getter's slot flip? my setter's?" without re-deriving the grouping.
+        var slotOf = new Dictionary<MethodDefinition, SlotPlan>();
+        foreach (SlotPlan slot in new VirtualSlotPlanner().Plan(candidates, family))
+            foreach (ISlotMethod m in slot.Members)
+                slotOf[((CecilSlotMethod)m).Definition] = slot;
+
+        // Group the PROPERTIES by their accessor slots — the unit that must flip atomically.
+        var groups = new Dictionary<SlotPlan, List<(TypeDefinition Type, PropertyDefinition Prop)>>();
+        foreach (TypeDefinition type in module.GetTypes())
+        foreach (PropertyDefinition prop in type.Properties)
+        {
+            MethodDefinition? acc = prop.GetMethod ?? prop.SetMethod;
+            if (acc is null || !acc.IsVirtual) continue;
+            if (!slotOf.TryGetValue(acc, out SlotPlan? key)) continue;      // not a Nullable accessor candidate
+            if (!groups.TryGetValue(key, out var list)) groups[key] = list = new();
+            list.Add((type, prop));
+        }
+
+        foreach ((SlotPlan key, var props) in groups)
+        {
+            // Every accessor of every property in the group must belong to a slot that FLIPPED. One deferred slot
+            // (or an accessor the planner never saw) defers the whole property group — never a half-flip.
+            var accessors = props.SelectMany(p => new[] { p.Prop.GetMethod, p.Prop.SetMethod }).OfType<MethodDefinition>().ToList();
+            DeferReason? blocked = null;
+            bool missing = false;
+            foreach (MethodDefinition a in accessors)
+            {
+                if (!slotOf.TryGetValue(a, out SlotPlan? s)) { missing = true; break; }
+                if (s.IsDeferred) { blocked = s.WholeSlotDefer; break; }
+            }
+            if (missing || blocked is not null)
+            {
+                foreach (var (t, p) in props)
+                    defers.Add($"{t.FullName}::{p.Name}  (nullable accessor, virtual -> DEFER {(missing ? "accessor outside the planned slot" : blocked.ToString())})");
+                continue;
+            }
+
+            // Apply each accessor's OWN plan (never the group's first — the planner hands out per-member payloads),
+            // then set every property's type from its own getter/setter, so a group spanning different closed
+            // shapes cannot leak one member's type onto another.
+            foreach (MethodDefinition a in accessors)
+            {
+                SlotPlan s = slotOf[a];
+                var sm = s.Members.First(m => ReferenceEquals(((CecilSlotMethod)m).Definition, a));
+                if (s.PerMember[sm] is not { } plan) continue;              // already-flipped no-op
+                family.Apply((CecilSlotMethod)sm, (NullableAccessorFlip)plan.Payload);
+            }
+            foreach (var (t, p) in props)
+            {
+                string before = p.PropertyType.FullName;
+                TypeReference natural = p.GetMethod?.ReturnType ?? p.SetMethod!.Parameters[0].ParameterType;
+                p.PropertyType = natural;
+                flips.Add($"{t.FullName}::{p.Name}:  {before}  ->  {natural.FullName}  (nullable accessor, virtual)");
+            }
+            flippedProps += props.Count;
+        }
+
+        return new RewriteResult(flippedProps, flips, defers);
     }
 
     // The broken `newobj <il2cpp Nullable`1<T>>::.ctor(System.IntPtr)` instruction in a getter body, or null. The
     // Nullable family is matched via the registry (Classify) — no il2cpp Nullable name literal.
-    static Instruction? FindNullableNewobjTail(MethodDefinition method)
+    internal static Instruction? FindNullableNewobjTail(MethodDefinition method)
     {
         foreach (Instruction instr in method.Body.Instructions)
         {

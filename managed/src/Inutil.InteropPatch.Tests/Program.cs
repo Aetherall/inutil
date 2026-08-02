@@ -318,6 +318,57 @@ try
             !postAudit.Any(x => x.Unexplained),
             $"unexplained: [{string.Join(", ", postAudit.Where(x => x.Unexplained).Select(x => x.Member + " — " + x.Why))}]");
 
+        // VIRTUAL Nullable accessors (Entity/Boss::Beacon value rung, ::Cache ref-bearing rung). Mechanically the
+        // same tail-swap + param flip as the non-virtual arm; what virtual adds is LOCKSTEP of a wider kind than any
+        // other family needs — a property is THREE things that must agree (get_, set_, the property's own type)
+        // across EVERY type in the override graph, and get_X / set_X are SEPARATE planner slots. Flipping one slot
+        // alone would leave get_Beacon natural while set_Beacon still took the il2cpp type: a property whose
+        // accessors disagree, which LOADS fine and only misbehaves when touched.
+        {
+            var vModule = ModuleDefinition.ReadModule(Copy("Assembly-CSharp.dll"),
+                new ReaderParameters { InMemory = true, AssemblyResolver = resolver });
+            var vRes = new NullableFieldRewriter().RewriteModule(vModule);
+            var vEnt = vModule.GetTypes().First(t => t.Name == "Entity");
+            var vBoss = vModule.GetTypes().First(t => t.Name == "Boss");
+
+            foreach (string pname in new[] { "Beacon", "Cache" })
+            {
+                var vbase = vEnt.Properties.First(p => p.Name == pname);
+                var vovr = vBoss.Properties.First(p => p.Name == pname);
+                bool refRung = pname == "Cache";
+                string expect = refRung ? "Loadout" : "System.Nullable`1";
+                Check($"virtual Nullable accessor {pname}: BASE and OVERRIDE flip in LOCKSTEP",
+                    (refRung ? vbase.PropertyType.FullName.EndsWith(expect, StringComparison.Ordinal)
+                             : vbase.PropertyType.FullName.StartsWith(expect, StringComparison.Ordinal))
+                    && vbase.PropertyType.FullName == vovr.PropertyType.FullName,
+                    $"Entity={vbase.PropertyType.FullName}, Boss={vovr.PropertyType.FullName}");
+                // Every accessor must match its own property — the half-flip that still loads.
+                foreach (var (owner, p) in new[] { ("Entity", vbase), ("Boss", vovr) })
+                    Check($"...and {owner}::{pname}'s get/set agree with the property type",
+                        p.GetMethod!.ReturnType.FullName == p.PropertyType.FullName
+                        && p.SetMethod!.Parameters[0].ParameterType.FullName == p.PropertyType.FullName,
+                        $"get={p.GetMethod.ReturnType.FullName}, set={p.SetMethod.Parameters[0].ParameterType.FullName}");
+                // ...and each carries the right rung's helper, on BOTH the base and the override.
+                string getHelper = refRung ? "BoxedToRefNullable" : "BoxedToNullable";
+                string setHelper = refRung ? "RefToNullable" : "ToIl2CppTyped";
+                foreach (var (owner, p) in new[] { ("Entity", vbase), ("Boss", vovr) })
+                {
+                    Check($"...and {owner}::get_{pname} body calls {getHelper} (tail-swap)",
+                        p.GetMethod!.Body.Instructions.Any(i => i.Operand is MethodReference gm && gm.Name == getHelper));
+                    Check($"...and {owner}::set_{pname} body calls {setHelper} (spliced dematerialize)",
+                        p.SetMethod!.Body.Instructions.Any(i => i.Operand is MethodReference sm && sm.Name == setHelper));
+                }
+            }
+            Check("idempotent: re-running the accessor pass over virtual slots flips 0",
+                new NullableFieldRewriter().RewriteModule(vModule).Flipped == 0);
+            // No virtual accessor should remain residual now that the lockstep exists.
+            Check("audit reports no virtual-accessor residual after the lockstep flip",
+                !ResidualAudit.Scan(vModule).Any(x => x.Member.EndsWith("::Beacon", StringComparison.Ordinal)
+                                                      || x.Member.EndsWith("::Cache", StringComparison.Ordinal)),
+                $"[{string.Join(" | ", ResidualAudit.Scan(vModule).Select(x => x.Member))}]");
+            vModule.Dispose();
+        }
+
         // STATIC accessors, both families — the shapes whose arg index is 0, not 1, because there is no `this`.
         // ToyGame::Game.Squad (static container field) and ::Game.Rally (static Nullable field) exist so this is
         // checked against the real generator's output rather than a hand-made body.

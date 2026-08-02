@@ -290,6 +290,57 @@ public static class ContainerFlipCases
             return $"GrantGold(int? 5) then (int? null): Score {before} -> {after} (+5) — value-type Nullable param dematerialized present AND empty";
         });
 
+        // VIRTUAL Nullable accessors (Entity/Boss::Beacon, ::Cache). get_X and set_X are separate vtable slots, so
+        // the property, its getter and its setter must all flip across the whole override graph or the property is
+        // a half-flip that LOADS and only misbehaves when touched. Boss's overrides deliberately store a DIFFERENT
+        // value than they are handed (X+1, Gold+1), so reading the value back proves the call dispatched through the
+        // OVERRIDE's flipped accessor rather than the base's — which a signature check alone cannot show.
+        suite.Add("nullable-accessor.virtual.flip.runs", () =>
+        {
+            // The type by NAME, never `FindProxyMethod(...).DeclaringType`: PeekBeaconX is declared on Entity and
+            // merely inherited by Boss, so DeclaringType would hand back Entity — and the case would then construct
+            // an Entity and exercise the BASE accessors while claiming to test the override.
+            Type bossT = FindProxyType("Boss", out string typeName);
+            object boss;
+            try { boss = Construct(bossT); }
+            catch (Exception ex) { Check.Skip($"il2cpp proxy construction of {typeName} not reachable: {ex.GetType().Name}: {ex.Message}"); return null; }
+
+            PropertyInfo beacon = bossT.GetProperty("Beacon")!, cache = bossT.GetProperty("Cache")!;
+            Check.True(!(beacon.PropertyType.FullName ?? "").Contains("Il2CppSystem.Nullable", StringComparison.Ordinal)
+                       && !(cache.PropertyType.FullName ?? "").Contains("Il2CppSystem.Nullable", StringComparison.Ordinal),
+                $"virtual accessors did not flip: Beacon={beacon.PropertyType.FullName}, Cache={cache.PropertyType.FullName}");
+
+            // VALUE rung through the override: hand it 7, the override stores 8.
+            Type vec3T = Nullable.GetUnderlyingType(beacon.PropertyType)!;
+            object vec3 = Activator.CreateInstance(vec3T)!;
+            SetXyz(vec3T, ref vec3, 7f);
+            beacon.SetValue(boss, vec3);
+            float x = Convert.ToSingle(bossT.GetMethod("PeekBeaconX")!.Invoke(boss, null));
+            object? viaGetter = beacon.GetValue(boss);
+            float gx = viaGetter is null ? -99f
+                : Convert.ToSingle(vec3T.GetField("X")?.GetValue(viaGetter) ?? vec3T.GetProperty("X")!.GetValue(viaGetter));
+            string where = $"(setter declared on {beacon.SetMethod?.DeclaringType?.Name}, instance is {boss.GetType().Name})";
+            Check.True(Math.Abs(x - 8f) < 0.001f,
+                $"Beacon=Vec3(7): PeekBeaconX()={x}, get_Beacon().X={gx}, expected 8 — the write did not go through Boss's override {where}");
+
+            // REF-BEARING rung through the override: hand it 100, the override stores 101 — and the embedded string
+            // must survive the box rebuild on the way in.
+            object player = ConstructPlayer(FindProxyMethod("Player", "MakeLoadout", out _).DeclaringType!);
+            object loadout = player.GetType().GetMethod("MakeLoadout")!.Invoke(player, new object?[] { 100 })!;
+            cache.SetValue(boss, loadout);
+            int gold = Convert.ToInt32(bossT.GetMethod("PeekCacheGold")!.Invoke(boss, null));
+            Check.True(gold == 101,
+                $"Cache=Loadout(100) then PeekCacheGold()={gold}, expected 101 (override stores Gold+1) — ref-bearing write did not reach the override");
+
+            // Empty on both rungs: null must clear, not throw.
+            beacon.SetValue(boss, null);
+            cache.SetValue(boss, null);
+            Check.True(Math.Abs(Convert.ToSingle(bossT.GetMethod("PeekBeaconX")!.Invoke(boss, null)) - (-1f)) < 0.001f
+                       && Convert.ToInt32(bossT.GetMethod("PeekCacheGold")!.Invoke(boss, null)) == -1,
+                "writing null through the virtual accessors did not clear both Nullables");
+            return $"virtual accessor lockstep: Beacon 7->{x} (override +1), Cache 100->{gold} (override +1), both clear on null";
+        });
+
         // STATIC container field (Game::Squad). A static setter's value is ldarg.0 — the slot that holds `this` on an
         // instance method — so the pre-check's literal ldarg.1 never matched and every static container property
         // deferred (529 in one real game). Offline proves it flips; only a booted game proves the WRITE lands, since
@@ -503,6 +554,24 @@ public static class ContainerFlipCases
                 $"ForEachScore(cb) invoked the managed lambda {captured.Count}x with [{string.Join(",", captured)}], expected 1x [{score}] — the delegate did not round-trip through op_Implicit");
             return $"ForEachScore(bare System.Action<int>) -> game called cb({score}): managed lambda fired {captured.Count}x, captured [{string.Join(",", captured)}] (op_Implicit round-trip)";
         });
+    }
+
+    // Find a loaded proxy TYPE by simple name. Distinct from FindProxyMethod(...).DeclaringType, which resolves to
+    // wherever the METHOD was declared — a base type for anything inherited, which silently retargets a case meant
+    // for the derived type.
+    static Type FindProxyType(string typeSimpleName, out string typeName)
+    {
+        foreach (Assembly asm in CandidateAssemblies())
+        {
+            Type[] types;
+            try { types = asm.GetTypes(); }
+            catch (ReflectionTypeLoadException e) { types = e.Types.Where(t => t is not null).ToArray()!; }
+            catch { continue; }
+
+            Type? t = types.FirstOrDefault(x => x.Name == typeSimpleName);
+            if (t is not null) { typeName = t.FullName ?? t.Name; return t; }
+        }
+        throw new AssertException($"{typeSimpleName} proxy type not found in any loaded assembly");
     }
 
     // The property a case names must EXIST — a rename/removal in the fixture is a loud failure, never a silent skip.
