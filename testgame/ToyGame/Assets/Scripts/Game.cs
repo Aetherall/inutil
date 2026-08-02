@@ -94,7 +94,22 @@ namespace ToyGame
         public Loadout? Stash;                                                            // ref-bearing Nullable VT field    -> SetNullableStruct
         public Player   Rival;                                                            // settable reference field          -> Get/SetObject
 
-        public Player(string name) { Name = name; Health = 100; Gear = new Loadout { Gold = 5, Owner = name }; Stash = null; Rival = null; }
+        // --- Nullable AUTO-PROPERTY fixture (the interop-patch accessor seam) — the shape the Nullable FIELD arm
+        // above does NOT cover. An auto-property gives il2cpp BOTH a backing field AND real get_/set_ METHODS, so
+        // Il2CppInterop generates two proxy members over one storage: a FIELD-backed accessor pair over
+        // <X>k__BackingField (bodies load NativeFieldInfoPtr) and a METHOD-backed pair for the property itself
+        // (bodies load NativeMethodInfoPtr + il2cpp_runtime_invoke). Only the first is flippable by the field arm;
+        // the second needs the param-flip splice. A Nullable FIELD (Stash) or a Nullable METHOD return/param
+        // (Game.FindSpawn/GrantGold) exercises neither half of that, which is why the gap went unnoticed.
+        // Both element rungs, since they take different converters:
+        //   Waypoint  — VALUE element    -> natural System.Nullable<Vec3>
+        //   Backpack  — REF-BEARING element (Loadout carries a string) -> natural is the BARE proxy (null == empty),
+        //               since System.Nullable<class> is illegal — the rung a consumer can't hand-write at all.
+        // Non-virtual on purpose: a virtual accessor is a separate (deferred) vtable-lockstep case.
+        public Vec3?    Waypoint { get; set; }
+        public Loadout? Backpack { get; set; }
+
+        public Player(string name) { Name = name; Health = 100; Gear = new Loadout { Gold = 5, Owner = name }; Stash = null; Rival = null; Waypoint = null; Backpack = null; }
 
         // Read-backs so the Fields demo can verify a by-name WRITE landed INDEPENDENTLY of Fields (the game's
         // own typed read of the same storage). Rooted in Bootstrap.Exercise so IL2CPP keeps real methodPointers.
@@ -103,6 +118,11 @@ namespace ToyGame
         public int    PeekStashGold()  => Stash.HasValue ? Stash.Value.Gold : -1;
         public string PeekStashOwner() => Stash.HasValue ? Stash.Value.Owner : null;
         public string PeekRivalName()  => Rival != null ? Rival.Name : null;
+        // Read-backs for the auto-properties, through the game's OWN typed view of the same storage — so a battery
+        // case proves a natural write through the flipped proxy actually landed (not merely that it compiled).
+        public float  PeekWaypointX()   => Waypoint.HasValue ? Waypoint.Value.X : -1f;
+        public int    PeekBackpackGold()  => Backpack.HasValue ? Backpack.Value.Gold : -1;
+        public string PeekBackpackOwner() => Backpack.HasValue ? Backpack.Value.Owner : null;
 
         public void   Damage(int amount) { Health -= amount; }                            // interface-dispatched target (IDamageable)
         public void   Grow(ref Vec3 v) { v.X *= 2; v.Y *= 2; v.Z *= 2; }                  // ref of a 12B BLITTABLE struct (raw write-back safe)

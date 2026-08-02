@@ -98,6 +98,14 @@ public class Bootstrap : MonoBehaviour
         // `ent`) AND Entity::Muster (base body) so IL2CPP keeps both methodPointers the lockstep param-flip targets.
         int msBoss = ent.Muster(new List<int> { 1, 2, _tick }); int msBase = new Entity().Muster(new List<int> { _tick });
 
+        // Nullable AUTO-PROPERTY accessors (Player.Waypoint / Player.Backpack): root BOTH directions of each, so
+        // IL2CPP keeps the real get_/set_ methodPointers the METHOD-backed accessor flip targets (an auto-property
+        // whose accessors are never called can be reduced to its backing field, which would hide the very shape
+        // this fixture exists to cover). Written through, then read back through the game's own typed view.
+        _p.Waypoint = new Vec3(_tick, _tick, _tick); Vec3? wayPt = _p.Waypoint;
+        _p.Backpack = new Loadout { Gold = _tick, Owner = "pack" }; Loadout? backPk = _p.Backpack;
+        float wayX = _p.PeekWaypointX(); int packGold = _p.PeekBackpackGold(); string packOwner = _p.PeekBackpackOwner();
+
         // type-friction surface — root the conversion-case members (Nullable / List / Dictionary / array /
         // delegate) so IL2CPP keeps their proxies and they're live targets for the TypeFrictionProbe.
         Vec3? spawn = _g.FindSpawn(_tick); Faction? side = _g.PreferredSide(_tick % 2 == 0); _g.GrantGold(5);

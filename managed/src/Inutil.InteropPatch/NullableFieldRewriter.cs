@@ -4,17 +4,31 @@ using Inutil.Schema;
 
 namespace Inutil.InteropPatch;
 
-// The Nullable FIELD/PROPERTY accessor pass. Il2CppInterop renders a Nullable<T> FIELD as a property with get_/set_
-// accessors — which the return/param families deliberately EXCLUDE (they skip IsGetter/IsSetter) AND which the method
-// arm's invoke-replace can't serve (a field-backed accessor has no native get_X to invoke; it reads the field via
-// il2cpp_field_get_value). So this pass owns them: it flips each il2cpp Nullable<T> property + its get/set accessors,
-// in LOCKSTEP, to the natural spelling —
+// The Nullable ACCESSOR pass — EVERY il2cpp Nullable<T> property, whichever way Il2CppInterop backed its accessors.
+// It owns accessors because the return/param families deliberately exclude them (they skip IsGetter/IsSetter); this
+// pass is therefore the ONLY thing standing between a Nullable property and a silently-unflipped member, so it must
+// cover BOTH backings an accessor can have — the boundary is the accessor's BODY SHAPE, not "field vs property":
+//
+//   • FIELD-backed  (a Nullable<T> FIELD; bodies load NativeFieldInfoPtr_X and read via il2cpp_field_get_value)
+//     There is no native get_X/set_X to invoke, so: GETTER TAIL-SWAP (keep the field-read/box body, swap ONLY the
+//     broken `newobj Nullable<T>(ptr)` tail for BoxedToNullable / BoxedToRefNullable — same IntPtr-on-stack shape)
+//     and SETTER body REBUILD (forward `this, NativeFieldInfoPtr_X, value` to WriteNullableField/WriteNullableRefField).
+//   • METHOD-backed (a real property — notably an AUTO-property, which yields BOTH members over one storage; bodies
+//     load NativeMethodInfoPtr_X and il2cpp_runtime_invoke). The getter tail-swap applies UNCHANGED: runtime_invoke
+//     applies the same Nullable boxing to a return as the field box does (empty -> null object, present -> the boxed
+//     INNER value), so the tail sees the identical IntPtr. The SETTER cannot be rebuilt (no field info to write
+//     through), so it takes the ordinary PARAM FLIP instead — ParamFlipResolver picks the converter and
+//     ParamFlip.Splice dematerializes the natural value at entry, exactly as a Nullable param on any other method.
+//
+// Either way the natural spelling is the same:
 //   • VALUE-type T (int, Vec3)  -> System.Nullable<T>
 //   • REF-bearing T (MongoID …) -> the bare proxy T (a nullable REFERENCE, null == empty; System.Nullable<class> is illegal)
-// via a GETTER TAIL-SWAP (leave the field-read/box body, swap ONLY the broken `newobj Nullable<T>(ptr)` tail for a
-// call to BoxedToNullable / BoxedToRefNullable — same IntPtr-in-stack shape) and a SETTER body REBUILD (forward
-// `this, NativeFieldInfoPtr_X, value` to WriteNullableField / WriteNullableRefField). The bug it fixes: a field-backed
-// Nullable<ref> PROPERTY accessor's raw Il2CppInterop getter NREs.
+//
+// The method-backed arm was the hole this pass shipped with: its pre-check demanded a NativeFieldInfoPtr the setter of
+// a real property never has, so every get+set Nullable property DEFERRED ("accessor not handleable") — including its
+// perfectly flippable getter, via all-or-nothing. It surfaced as EFT's ItemTemplate::ParentId, where a mod had to
+// hand-build the boxed Nullable through ValueTypeBridge.RefToNullable — i.e. hand-perform the very splice below.
+// (Get-ONLY method-backed properties flipped fine all along: with no setter, the pre-check passed vacuously.)
 //
 // Guardrails: NON-VIRTUAL only (a virtual accessor is a vtable/interface slot needing the same lockstep as virtual
 // returns — deferred); ALL-OR-NOTHING per property (every present accessor is pre-checked handleable, or the whole
@@ -61,10 +75,25 @@ public sealed class NullableFieldRewriter
             // if it has the broken newobj tail (needs the swap) OR is ALREADY System.Nullable<T> (a prior tool version
             // flipped the getter but not the setter/property — a half-patched state to REPAIR). A setter is handle-able
             // if it is a single-param body that loads the NativeFieldInfoPtr static (harvested for the rebuild).
+            // A setter is handleable EITHER way it can be backed: field-backed (a NativeFieldInfoPtr to rebuild the
+            // body around) or method-backed (an invoke body whose param takes the ordinary flip — which requires the
+            // resolver to actually produce a converter, so an unresolvable one defers rather than half-flips).
             bool getterOk = getter is null || (getter.HasBody && (FindNullableNewobjTail(getter) is not null || ReturnsSysNullable(getter)));
-            bool setterOk = setter is null || (setter.HasBody && setter.Parameters.Count == 1 && HarvestFieldInfoLdsfld(setter) is not null);
+            FieldReference? setterFieldInfo = setter is not null && setter.HasBody ? HarvestFieldInfoLdsfld(setter) : null;
+            (TypeReference natural, MethodReference converter)? setterParamFlip =
+                setter is not null && setter.HasBody && setterFieldInfo is null && IsMethodBacked(setter)
+                    ? ParamFlipResolver.Resolve(module, wrap, setter.Parameters[0].ParameterType)
+                    : null;
+            bool setterOk = setter is null || (setter.HasBody && setter.Parameters.Count == 1
+                                               && (setterFieldInfo is not null || setterParamFlip is not null));
             if (!getterOk || !setterOk || (getter is null && setter is null))
             { defers.Add($"{type.FullName}::{prop.Name}  (nullable field -> DEFER: accessor not handleable)"); continue; }
+
+            // The two derivations of the natural type — this pass's own (targetType, from the property's element) and
+            // the resolver's (for the spliced param) — must agree, or getter and setter would flip to different types
+            // and the property would be a half-flip that still compiles. Disagreement defers, loudly.
+            if (setterParamFlip is { } spf && spf.natural.FullName != targetType.FullName)
+            { defers.Add($"{type.FullName}::{prop.Name}  (nullable field -> DEFER: natural type disagreement {targetType.FullName} vs {spf.natural.FullName})"); continue; }
 
             // GETTER: swap the broken `newobj Nullable<T>(ptr)` tail to the chosen helper (skipped when already flipped —
             // no newobj to find), then set the natural return type.
@@ -78,10 +107,11 @@ public sealed class NullableFieldRewriter
                 getter.ReturnType = targetType;
             }
 
-            // SETTER: rebuild the body to `<Write*>(this, NativeFieldInfoPtr_X, value); ret`, then flip the param type.
-            if (setter is not null)
+            // SETTER, field-backed: rebuild the body to `<Write*>(this, NativeFieldInfoPtr_X, value); ret`, then flip
+            // the param type. The rebuild exists because the generated body would raw-copy the Nullable bytes,
+            // storing an embedded managed reference with no GC write barrier.
+            if (setter is not null && setterFieldInfo is not null)
             {
-                FieldReference fieldInfo = HarvestFieldInfoLdsfld(setter)!;
                 MethodReference writeClosed = refBearing ? wrap.WriteNullableRefFieldClosed(t) : wrap.WriteNullableFieldClosed(t);
                 MethodBody body = setter.Body;
                 body.ExceptionHandlers.Clear();
@@ -89,12 +119,23 @@ public sealed class NullableFieldRewriter
                 body.Instructions.Clear();
                 body.InitLocals = false;
                 ILProcessor il = body.GetILProcessor();
-                il.Emit(OpCodes.Ldarg_0);             // this (the proxy — an Il2CppObjectBase)
-                il.Emit(OpCodes.Ldsfld, fieldInfo);   // nint fieldInfo (NativeFieldInfoPtr_<Field>)
-                il.Emit(OpCodes.Ldarg_1);             // value: System.Nullable<T> (value-type) or T (ref-bearing)
+                il.Emit(OpCodes.Ldarg_0);                    // this (the proxy — an Il2CppObjectBase)
+                il.Emit(OpCodes.Ldsfld, setterFieldInfo);    // nint fieldInfo (NativeFieldInfoPtr_<Field>)
+                il.Emit(OpCodes.Ldarg_1);                    // value: System.Nullable<T> (value-type) or T (ref-bearing)
                 il.Emit(OpCodes.Call, writeClosed);
                 il.Emit(OpCodes.Ret);
                 setter.Parameters[0].ParameterType = targetType;
+            }
+            // SETTER, method-backed: the invoke body is CORRECT as written (it unboxes the il2cpp Nullable it is
+            // handed and passes it to set_X) — only its param spelling is wrong. So keep the body and splice the
+            // ordinary entry dematerialization in front of it, the same mechanism every other Nullable param gets.
+            else if (setter is not null)
+            {
+                var (_, converter) = setterParamFlip!.Value;
+                ParameterDefinition p = setter.Parameters[0];
+                TypeReference il2cppType = p.ParameterType;
+                ParamFlip.Splice(module, setter, p, il2cppType, converter);
+                p.ParameterType = targetType;
             }
 
             prop.PropertyType = targetType;
@@ -134,5 +175,18 @@ public sealed class NullableFieldRewriter
                 && fr.Name.StartsWith("NativeFieldInfoPtr", StringComparison.Ordinal))
                 return fr;
         return null;
+    }
+
+    // The METHOD-backed twin of HarvestFieldInfoLdsfld: the accessor dispatches to a real native get_X/set_X, which
+    // Il2CppInterop locates through an `ldsfld <Proxy>::NativeMethodInfoPtr_<name>` before il2cpp_runtime_invoke.
+    // Disjoint from the field-backed shape by construction (one body reads a field, the other invokes a method), so
+    // the two arms can never both claim an accessor.
+    static bool IsMethodBacked(MethodDefinition accessor)
+    {
+        foreach (Instruction instr in accessor.Body.Instructions)
+            if (instr.OpCode == OpCodes.Ldsfld && instr.Operand is FieldReference fr
+                && fr.Name.StartsWith("NativeMethodInfoPtr", StringComparison.Ordinal))
+                return true;
+        return false;
     }
 }

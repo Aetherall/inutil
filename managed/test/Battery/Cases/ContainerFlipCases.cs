@@ -290,6 +290,82 @@ public static class ContainerFlipCases
             return $"GrantGold(int? 5) then (int? null): Score {before} -> {after} (+5) — value-type Nullable param dematerialized present AND empty";
         });
 
+        // Nullable AUTO-PROPERTY (METHOD-backed accessors): Player::Waypoint (value element) and Player::Backpack
+        // (ref-bearing element). An auto-property yields TWO proxy members over one storage — a FIELD-backed pair
+        // over <X>k__BackingField and a METHOD-backed pair for the property itself (get_/set_ dispatch through
+        // il2cpp_runtime_invoke). Only the first was ever flippable; the second deferred as "accessor not
+        // handleable", because the pre-check demanded a NativeFieldInfoPtr a real property's setter never has. These
+        // cases pin the METHOD-backed pair: the getter via the shared tail-swap, the setter via the ordinary param
+        // flip (ToIl2CppTyped for the value rung, ValueTypeBridge.RefToNullable for the ref-bearing one).
+        suite.Add("nullable-accessor.flip.deployed", () =>
+        {
+            Type playerT = FindProxyMethod("Player", "PeekWaypointX", out string typeName).DeclaringType!;
+            PropertyInfo wp = RequireProperty(playerT, "Waypoint"), bp = RequireProperty(playerT, "Backpack");
+            string wpT = wp.PropertyType.FullName ?? wp.PropertyType.Name;
+            string bpT = bp.PropertyType.FullName ?? bp.PropertyType.Name;
+
+            // The value rung goes to System.Nullable<Vec3>; the ref-bearing rung CANNOT (System.Nullable<class> is
+            // illegal) and goes to the BARE proxy used as a nullable reference — so asserting "not il2cpp Nullable"
+            // is the honest shared check, plus each rung's own target.
+            Check.True(wpT.StartsWith("System.Nullable", StringComparison.Ordinal),
+                $"{typeName}::Waypoint is '{wpT}' — the method-backed Nullable accessor did not flip to System.Nullable");
+            Check.True(!bpT.Contains("Nullable", StringComparison.Ordinal) && bpT.EndsWith("Loadout", StringComparison.Ordinal),
+                $"{typeName}::Backpack is '{bpT}' — the ref-bearing method-backed accessor should flip to the bare Loadout proxy");
+            // get/set must agree with the property, or the flip was a half-flip that still loads.
+            Check.True(wp.GetMethod!.ReturnType == wp.PropertyType && wp.SetMethod!.GetParameters()[0].ParameterType == wp.PropertyType,
+                $"{typeName}::Waypoint accessors disagree with the property type ({wpT})");
+            Check.True(bp.GetMethod!.ReturnType == bp.PropertyType && bp.SetMethod!.GetParameters()[0].ParameterType == bp.PropertyType,
+                $"{typeName}::Backpack accessors disagree with the property type ({bpT})");
+            return $"{typeName}: Waypoint -> {wpT}, Backpack -> {bpT} (method-backed accessors, get/set in lockstep)";
+        });
+
+        suite.Add("nullable-accessor.flip.runs", () =>
+        {
+            MethodInfo peekX = FindProxyMethod("Player", "PeekWaypointX", out string typeName);
+            Type playerT = peekX.DeclaringType!;
+            object player;
+            try { player = ConstructPlayer(playerT); }
+            catch (Exception ex) { Check.Skip($"il2cpp proxy construction of {typeName} not reachable: {ex.GetType().Name}: {ex.Message}"); return null; }
+
+            MethodInfo peekGold = playerT.GetMethod("PeekBackpackGold")!, peekOwner = playerT.GetMethod("PeekBackpackOwner")!;
+            PropertyInfo wp = RequireProperty(playerT, "Waypoint"), bp = RequireProperty(playerT, "Backpack");
+
+            // VALUE rung. Write a natural Nullable<Vec3> through the flipped setter; the GAME reads the same storage
+            // back (PeekWaypointX), so a mis-dematerialized write shows as a wrong X rather than a silent pass.
+            Type vec3T = Nullable.GetUnderlyingType(wp.PropertyType)!;
+            object vec3 = Activator.CreateInstance(vec3T)!;
+            SetXyz(vec3T, ref vec3, 7f);
+            wp.SetValue(player, vec3);                                   // present
+            float x = Convert.ToSingle(peekX.Invoke(player, null));
+            Check.True(Math.Abs(x - 7f) < 0.001f, $"Waypoint=Vec3(7,..) then PeekWaypointX()={x}, expected 7 — the spliced Nullable write is wrong");
+            object? readBack = wp.GetValue(player);
+            Check.True(readBack is not null, "get_Waypoint returned null for a PRESENT value — the getter tail-swap read the box wrong");
+
+            wp.SetValue(player, null);                                   // empty
+            float none = Convert.ToSingle(peekX.Invoke(player, null));
+            Check.True(Math.Abs(none - (-1f)) < 0.001f, $"Waypoint=null then PeekWaypointX()={none}, expected -1 (HasValue=false) — the EMPTY write did not clear hasValue");
+            Check.True(wp.GetValue(player) is null, "get_Waypoint should be null after writing an empty Nullable");
+
+            // REF-BEARING rung — the one with no hand-writable natural spelling. The Loadout comes from the game's
+            // own factory (no il2cpp construction guesswork), and Owner is a real string reference INSIDE the value
+            // type: reading it back intact is what proves RefToNullable's GC-aware copy, not a raw byte blit.
+            object loadout = playerT.GetMethod("MakeLoadout")!.Invoke(player, new object?[] { 999 })!;
+            bp.SetValue(player, loadout);                                // present
+            int gold = Convert.ToInt32(peekGold.Invoke(player, null));
+            string? owner = (string?)peekOwner.Invoke(player, null);
+            Check.True(gold == 999, $"Backpack=Loadout(999) then PeekBackpackGold()={gold}, expected 999 — RefToNullable wrote the wrong inner value");
+            Check.True(!string.IsNullOrEmpty(owner),
+                $"PeekBackpackOwner()='{owner ?? "null"}' — the embedded string reference did not survive the Nullable box (GC-aware copy failed)");
+            Check.True(bp.GetValue(player) is not null, "get_Backpack returned null for a PRESENT ref-bearing value");
+
+            bp.SetValue(player, null);                                   // empty == a null reference
+            int noGold = Convert.ToInt32(peekGold.Invoke(player, null));
+            Check.True(noGold == -1, $"Backpack=null then PeekBackpackGold()={noGold}, expected -1 (empty Nullable)");
+            Check.True(bp.GetValue(player) is null, "get_Backpack should be null after writing an empty (null) ref-bearing Nullable");
+
+            return $"method-backed accessors round-trip: Waypoint present(X=7)/empty(-1), Backpack present(Gold=999, Owner='{owner}')/empty(-1)";
+        });
+
         // PARAM direction (ToIl2Cpp): SetInventory(List<string>) — the param flips to natural, and invoking it with
         // a natural List dematerializes to an il2cpp List the real method consumes (Score += items.Count).
         suite.Add("container.list-param.flip.deployed", () =>
@@ -402,6 +478,31 @@ public static class ContainerFlipCases
                 $"ForEachScore(cb) invoked the managed lambda {captured.Count}x with [{string.Join(",", captured)}], expected 1x [{score}] — the delegate did not round-trip through op_Implicit");
             return $"ForEachScore(bare System.Action<int>) -> game called cb({score}): managed lambda fired {captured.Count}x, captured [{string.Join(",", captured)}] (op_Implicit round-trip)";
         });
+    }
+
+    // The property a case names must EXIST — a rename/removal in the fixture is a loud failure, never a silent skip.
+    static PropertyInfo RequireProperty(Type proxyType, string name)
+        => proxyType.GetProperty(name)
+           ?? throw new AssertException($"{proxyType.FullName}::{name} property not found on the proxy — the fixture member is missing or renamed");
+
+    // ToyGame.Player has no parameterless ctor (Player(string name)), so Construct's path does not serve it.
+    static object ConstructPlayer(Type proxyType)
+    {
+        ConstructorInfo? ctor = proxyType.GetConstructors()
+            .FirstOrDefault(c => c.GetParameters() is { Length: 1 } ps && ps[0].ParameterType == typeof(string));
+        if (ctor is null) throw new MissingMethodException($"{proxyType.FullName} has no (string) ctor");
+        return ctor.Invoke(new object?[] { "battery" });
+    }
+
+    // Set X/Y/Z on a Vec3 value proxy (fields on the il2cpp struct proxy; property fallback for a rendering that
+    // surfaces them as properties). Boxed-by-ref so the mutation lands on the box the caller then writes.
+    static void SetXyz(Type vec3T, ref object boxed, float v)
+    {
+        foreach (string n in new[] { "X", "Y", "Z" })
+        {
+            if (vec3T.GetField(n) is { } f) f.SetValue(boxed, v);
+            else vec3T.GetProperty(n)?.SetValue(boxed, v);
+        }
     }
 
     // A "<method> return type flipped to natural" case (no game instance needed — pure reflection over the proxy).
