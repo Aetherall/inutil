@@ -9,8 +9,8 @@ plausible-looking signature dump or summary line was trusted over the compiler. 
 at the end — the failure modes are reusable.
 
 **Status:** G3 and G4 are closed and proven (G4 in-game under both loaders). G2 was mis-stated and is restated
-below as a design question needing a decision before any code. Remaining: G5's wiremap onboarding gap — which the
-in-game run just made concrete, see G9 — then the ergonomic items (G6-G8).
+below as a design question needing a decision before any code. Remaining: G5's wiremap onboarding gap for
+CONSUMERS (G9 fixed inutil's own harness ordering, not a consumer's pipeline), then the ergonomic items (G6-G8).
 
 ---
 
@@ -212,20 +212,30 @@ is a data point about priority.
 
 ---
 
-## G9 — the first `*-validate` run after a reprovision is always RED
+## G9 — the first `*-validate` run after a reprovision was always RED — **CLOSED**
 
-Found by running the long loop. `setup-bepinex --force` / `setup-melon --force` regenerate `interop/` from scratch,
-which also removes `inutil.wiremap.json`. `validate.sh` then runs the interop patch **before** the wire-map extract,
-so the patch has no wiremap to stamp (`== stamped 0 wire attribute(s) ==`) and every `wire-shape.*` case fails on a
-type that carries no recovered wire names. The extract runs moments later, so the *second* run is green with no
-change to anything — which is exactly the shape of failure that trains people to re-run and shrug.
+Found by running the long loop for G4. `setup-bepinex --force` / `setup-melon --force` regenerate `interop/` from
+scratch, which also removes `inutil.wiremap.json`. `validate.sh` then ran the interop patch **before** the wire-map
+extract, so the patch had no sidecar to stamp (`== stamped 0 wire attribute(s) ==`) and every `wire-shape.*` case
+failed on a type carrying no recovered wire names. The extract ran moments later, so the *second* run was green
+with nothing changed — the failure shape that teaches people to re-run and shrug.
 
-Observed identically on both loaders: BepInEx RED 4 (3 wire-shape + one unrelated assertion bug), then GREEN 97;
-Melon RED 3 (all wire-shape), then GREEN 97.
+Observed identically on both loaders before the fix: BepInEx RED 4, then GREEN 97; Melon RED 3, then GREEN 97.
 
-Fix direction: extract the wire map before the patch in `validate.sh`, or have the patch step re-stamp after the
-extract. Either makes a fresh provision green on the first run. Worth doing before anyone treats "re-run it" as
-normal.
+**Fixed by ordering, guarded by an assertion.** The extract moved ahead of the patch (it reads
+`GameAssembly.dll` + `global-metadata.dat`, never the proxies, so it has no dependency in the other direction), and
+the patch step now asserts the fact that ordering exists to guarantee: by that point a wire map must exist, so
+finding none — or stamping zero from one — fails loud, in one line, right there. A future reordering or a silently
+failing extract cannot come back as several cryptic battery failures on a type that mysteriously has no wire names.
+
+Proven on the exact scenario that was always red — a full `--force` reprovision followed by a **single** validate
+run, on both loaders:
+
+```
+>> wire-attrs: 1 recovered type(s) from inutil.wiremap.json
+>> wire-attrs: stamped 4 member(s) across 1 DLL(s)
+GREEN — 97 passed          (bepinex-validate, and melon-validate, first run)
+```
 
 ---
 

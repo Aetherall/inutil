@@ -60,7 +60,7 @@ dotnet build "$CLI_PROJ" -c Release -v q --nologo
 echo ">> self-testing the aggregator (must catch every failure mode before we trust its verdict)"
 dotnet "$CLI_DLL" selftest || { echo "!! aggregator self-test FAILED — refusing to run the battery against a broken judge" >&2; exit 1; }
 
-# --- 1b. patch the interop proxies (§7.2) + build the SDK the flip resolves to (§7.3) --------------
+# --- 1b. build the patcher + the SDK the flip resolves to (§7.2/§7.3) -----------------------------
 # The flip must be present in the DEPLOYED proxy before launch (so Il2CppInterop loads the natural return
 # type), and Inutil.dll must be beside the loader (so the spliced `call WrapTaskT` resolves at JIT). Both are
 # idempotent: re-patching an already-flipped tree writes nothing.
@@ -74,13 +74,51 @@ echo ">> building the no-build mod host (Inutil.Mods + Roslyn) for the §7.9 cap
 MODS_PROJ="$REPO_ROOT/managed/src/Inutil.Mods/Inutil.Mods.csproj"
 dotnet build "$MODS_PROJ" -c Release -v q --nologo -p:Loader="$LOADER_PROP"
 MODS_OUT="$(dirname "$MODS_PROJ")/bin/Release"
+# --- 1c. extract the metadata wire map (§7.13 / ../../docs/contribution/architecture/16-metadata.md) — the pillar's author-time pass ----------
+# Recover the authored JSON wire names the IL2CPP proxy STRIPS (Cpp2IL over GameAssembly.dll + global-metadata.dat,
+# via the same --game locator) into the interop dir's inutil.wiremap.json, beside the proxies — the same sidecar
+# InteropPatch/WireMap.cs reads at patch time. Run for BOTH loaders: the wire-map keys REAL il2cpp class names, and
+# WireMap.ForType's Il2Cpp-prefix bridge lets the same recovered map drive BepInEx (ToyGame.*) and MelonLoader
+# (Il2CppToyGame.*) alike.
+#
+# ORDER MATTERS, and it used to be wrong: this ran AFTER the patch. The patch is what stamps the recovered names
+# onto the proxies, so on a freshly provisioned tree — where `setup-*  --force` has just regenerated interop/ and
+# removed the sidecar — it had nothing to stamp, and every wire-shape battery case failed on a type carrying no
+# recovered names. The extract then ran moments later, so a SECOND run was green with no change to anything: the
+# failure mode that teaches people to re-run and shrug. Extract first; the extract reads GameAssembly.dll and
+# global-metadata.dat, never the proxies, so it has no dependency in the other direction.
+echo ">> extracting the wire map (inutil.wiremap.json) for the interop patch (§7.13 / metadata pillar)"
+META_PROJ="$REPO_ROOT/managed/src/Inutil.Metadata.Cli/Inutil.Metadata.Cli.csproj"
+META_DLL="$REPO_ROOT/managed/src/Inutil.Metadata.Cli/bin/Release/net9.0/inutil-metadata-extract.dll"
+dotnet build "$META_PROJ" -c Release -v q --nologo
+dotnet "$META_DLL" --game "$LOADER_DIR" || { echo "!! metadata extract failed" >&2; exit 1; }
+
+# --- 1d. patch the interop proxies (§7.2), AFTER the wire map exists ------------------------------
+# The flip must be present in the DEPLOYED proxy before launch (so Il2CppInterop loads the natural return type).
+# Idempotent: re-patching an already-flipped tree writes nothing.
 # Drive the patcher through the v2 --game locator (../../docs/contribution/architecture/16-metadata.md): it re-detects the loader layout
 # under $LOADER_DIR and resolves the SAME proxy dir the shell computed as $INTEROP above — dogfooding the locator
 # the pillar's multi-stage pass hangs off, instead of passing the dir the shell already knows.
+#
+# Guarded on the FACT the ordering above exists to guarantee: by this point a wire map has been extracted, so the
+# patch MUST find one and stamp from it. Asserting "the sidecar was consumed" catches any future reordering (or a
+# silently failing extract) here, in one loud line, instead of downstream as several cryptic battery failures on a
+# type that mysteriously carries no wire names.
 echo ">> patching the interop proxies under $LOADER_DIR (§7.2 atomic in-place, via --game locator)"
-dotnet "$PATCH_DLL" --game "$LOADER_DIR" || { echo "!! interop patch failed" >&2; exit 1; }
+PATCH_LOG="$(mktemp)"
+dotnet "$PATCH_DLL" --game "$LOADER_DIR" 2>&1 | tee "$PATCH_LOG"
+[ "${PIPESTATUS[0]}" -eq 0 ] || { echo "!! interop patch failed" >&2; rm -f "$PATCH_LOG"; exit 1; }
+if grep -q 'no usable wiremap' "$PATCH_LOG"; then
+  echo "!! the patch found no wiremap — the extract must run BEFORE the patch (see 1c), or it failed silently" >&2
+  rm -f "$PATCH_LOG"; exit 1
+fi
+if grep -qE '^== stamped 0 wire attribute\(s\) ==' "$PATCH_LOG"; then
+  echo "!! the patch stamped 0 wire attributes despite a wiremap — recovered names did not reach the proxies" >&2
+  rm -f "$PATCH_LOG"; exit 1
+fi
+rm -f "$PATCH_LOG"
 
-# --- 1c. build the native hook engine (§7.7) so the SDK's LoaderAdapter can [DllImport] it -----------
+# --- 1e. build the native hook engine (§7.7) so the SDK's LoaderAdapter can [DllImport] it -----------
 # inutil_core.dll (core/interceptor.c + generic_thunk_post.S, built SHARED) is the substrate-agnostic hook
 # engine. Cross-compiled with the vendored mingw toolchain; deployed beside Inutil.dll so the plugin's
 # [DllImport("inutil_core")] resolves. Idempotent (Ninja no-ops an unchanged tree).
@@ -91,18 +129,6 @@ cmake -S "$REPO_ROOT/native" -B "$REPO_ROOT/native/build" -G Ninja -Wno-dev \
 ninja -C "$REPO_ROOT/native/build" inutil_core >/dev/null || { echo "!! native hook engine build failed" >&2; exit 1; }
 CORE_DLL="$REPO_ROOT/native/build/inutil_core.dll"
 [ -f "$CORE_DLL" ] || { echo "!! inutil_core.dll not produced at $CORE_DLL" >&2; exit 1; }
-
-# --- 1d. extract the metadata wire map (§7.13 / ../../docs/contribution/architecture/16-metadata.md) — the pillar's author-time pass ----------
-# Recover the authored JSON wire names the IL2CPP proxy STRIPS (Cpp2IL over GameAssembly.dll + global-metadata.dat,
-# via the same --game locator) into the interop dir's inutil.wiremap.json, beside the proxies — the same sidecar
-# InteropPatch/WireMap.cs reads at patch time. Run for BOTH loaders: the wire-map keys REAL il2cpp class names, and
-# WireMap.ForType's Il2Cpp-prefix bridge lets the same recovered map drive BepInEx (ToyGame.*) and MelonLoader
-# (Il2CppToyGame.*) alike.
-echo ">> extracting the wire map (inutil.wiremap.json) for the interop patch (§7.13 / metadata pillar)"
-META_PROJ="$REPO_ROOT/managed/src/Inutil.Metadata.Cli/Inutil.Metadata.Cli.csproj"
-META_DLL="$REPO_ROOT/managed/src/Inutil.Metadata.Cli/bin/Release/net9.0/inutil-metadata-extract.dll"
-dotnet build "$META_PROJ" -c Release -v q --nologo
-dotnet "$META_DLL" --game "$LOADER_DIR" || { echo "!! metadata extract failed" >&2; exit 1; }
 
 # --- 2. build the loader battery shim -------------------------------------------------------------
 echo ">> building the $LOADER battery shim"
