@@ -8,21 +8,24 @@ distinction earned its place here: two entries in the first draft of this file w
 plausible-looking signature dump or summary line was trusted over the compiler. See "How the wrong answers happened"
 at the end — the failure modes are reusable.
 
-**Status:** G3, G4, G10, G12, G13 and G14 are closed and proven (G4 and G14 in-game under both loaders). **G8 is half stale, half real** — a non-generic `Task` return works, but NOT with arguments (measured; see the table there). G2 was
-mis-stated and is restated below as a design question needing a decision before any code. Remaining: **G11**
+**Status:** G3, G4, G8, G10, G12, G13 and G14 are closed and proven (G4, G8 and G14 in-game under both loaders).
+G2 was mis-stated and is restated below as a design question needing a decision before any code. Remaining: **G11**
 (re-diagnosed below — much smaller than first recorded, and an ordinary fix), G5's wiremap onboarding gap for
-CONSUMERS (G9 fixed inutil's own harness ordering, not a consumer's pipeline), then the ergonomic items (G6-G8).
+CONSUMERS (G9 fixed inutil's own harness ordering, not a consumer's pipeline), then the ergonomic items (G6-G7).
 
-**Four entries in this file have now been wrong on first writing (G2, G8, G11, and G14's first fix), every time
-because a plausible reading was trusted over a measurement.** G14 is the sharpest case: the probe that "confirmed"
-the diagnosis was statically typed, which silently took a different dispatch path than the containers the bug lives
-in, and the resulting fix made things *worse* while passing every offline test. G8 is the most instructive, and it
-went wrong TWICE in opposite directions: first recorded too broadly ("Task returns can't be replaced"), then — after
-a long-missing test was finally written and went green — declared "never a gap", which was too narrow by exactly the
-shape the new test could not express, since both fixture methods take no arguments. A test written to demonstrate a
-capability demonstrates the capability it was shaped for. Prefer the oracle that runs the real shape, re-run the
-claims you inherited, and when one source records two different exceptions under one label, believe the exceptions
-rather than the label.
+**Four entries in this file have been wrong on first writing (G2, G8, G11, and G14's first fix), every time because
+a plausible reading was trusted over a measurement.** G14: the probe that "confirmed" the diagnosis was statically
+typed, so it silently took a different dispatch path than the containers the bug lives in, and the resulting fix
+made things *worse* while passing every offline test. G8 went wrong THREE times, converging only when it was
+root-caused instead of correlated — too broad, then too narrow (the new test's fixture methods were parameterless),
+then a spurious "with arguments" bound. Each wrong answer was consistent with every observation available at the
+time; what broke the loop was reading the failing line, not collecting more data points.
+
+Two rules earned the hard way. **A test written to demonstrate a capability demonstrates the capability it was
+shaped for** — check what its fixture cannot express before believing it. And **when one source records two
+different exceptions under one label, believe the exceptions, not the label**: G8's two consumer sites cited
+`MissingMethodException` and `ArgumentOutOfRangeException`, one stale and one live, and reading them as a single
+claim is what made a broken conversion look safe.
 
 **G10 and G11 were found by ACTING on [GUIDANCE.md](./GUIDANCE.md), not by reading more code** — G10 by running §0
 (re-patch) on the consumer's real overlay, G11 by taking §4's advice and then probing it in a booted game. Both were
@@ -241,76 +244,61 @@ follow the convention.
 
 ---
 
-## G8 — a `Task`-returning method cannot be replaced ergonomically — **HALF STALE, HALF REAL**
+## G8 — a `Task`-returning method cannot be replaced ergonomically — **ROOT-CAUSED AND FIXED**
 
-> **CORRECTION.** This entry was first rewritten as "never a gap", on the strength of a battery case that only
-> covered PARAMETERLESS methods. Acting on that, three consumer sites were converted and two of them threw
-> `ArgumentOutOfRangeException` out of the hook dispatch on the first boot. The conversion is reverted. What is
-> actually true is below; the bound is **non-generic `Task` WITH arguments**.
+> **This entry was wrong three times**, each time more precisely: "Task returns can't be replaced" (too broad) →
+> "never a gap" (too narrow — the new test's fixture methods were parameterless) → "non-generic Task WITH args"
+> (a correlation, not a cause). The actual defect is one line and has nothing to do with arity.
 
-Five data points, all measured:
+**Root cause.** `Il2CppConvRuntime.WrapTask` indexed `node.Children[0]` unconditionally:
 
-| Shape | Args | Result |
-|---|---|---|
-| `Task Commit()` (ToyGame) | 0 | works — forwards via `Proceed<Task>()` |
-| `Task Suppress()` (ToyGame) | 0 | works — replaces with a fabricated Task |
-| `Task<IResult> GamePrepare(bool)` (EFT, in production) | 1 | works |
-| `Task StartTutorial(bool, bool)` (EFT) | 2 | **ArgumentOutOfRangeException** |
-| `Task InternalStartGame(string, bool, bool)` (EFT) | 3 | **ArgumentOutOfRangeException** |
-
-So the boundary is neither Task-vs-not nor generic-vs-not. A non-generic `Task` return works, and arguments work;
-the two **together** fail. The hook binds and its body runs — `[FLR] InternalStartGame: isLocalGame True -> true`
-was logged, twice — and then `Proceed<Task>(gameMap, true, isBotEnabled)` throws instead of running the original,
-surfacing as `inutil hook TarkovApplication::InternalStartGame threw ArgumentOutOfRangeException: Index was out of
-range` plus a client-side `AggregateException`. Root cause not isolated; it is inside the dispatch, not the
-consumer's body.
-
-**What IS stale, and it is worth keeping separate.** The exception the ForceLocalRaid workaround cites —
-`MissingMethodException: Constructor on type 'System.Threading.Tasks.Task' not found` from `Hook<T>` +
-`Proceed<Task>` — was real, and it is the **UNFLIPPED** case. inutil's own bind-time validator has always said so
-(`Inutil.Mods.Tests`: *"ValidateReturn REJECTS managed Task vs an unflipped il2cpp Task return"* / *"passes a
-FLIPPED (managed) Task return"*). The return flip landed afterwards, and nobody re-tested.
-
-**Now proven both directions, both loaders** (`modhost.hook.nongeneric-task`), against a real compiled
-`Hook<Game>` in a booted game:
-
-```
-Commit   +7  -> +7    forwarded via Proceed<Task>()      — the original ran, its il2cpp task round-tripped
-Suppress +99 -> +0    fabricated Task.CompletedTask      — the original was skipped, the mod's own task reached the game
-teardown +99                                             — restored, so the suppression was the hook and not a dead method
+```csharp
+static object? WrapTask(Conv node, object value)
+    => _wrapTaskT.MakeGenericMethod(node.Children[0].Managed)   // <- a non-generic Task has NO children
+                 .Invoke(null, new object?[] { (Il2CppObjectBase)value });
 ```
 
-The second line also disposes of the stronger claim in the old entry ("the limit bites when a consumer needs to
-**transform** the result"): returning a fabricated `Task` in place of the original works, which is transformation.
+A `Task<T>` node has one child (the element); a bare `Task` node has none. So **every ToManaged read of a
+non-generic Task threw `ArgumentOutOfRangeException`** — `Proceed<Task>()` on any bare-Task method, always,
+regardless of arity. `Il2CppSugar` has carried a non-generic `WrapTask(Il2CppObjectBase)` overload the whole time
+for exactly this; it was simply never reached from here. The ToIl2Cpp twin (`ContainerBridge.DematerializeTask`)
+has always branched on `Children.Count` — only the read side assumed generic, which is why REPLACING a Task
+(`Suppress`, fabricate-and-return) always worked while FORWARDING one never did.
 
-**How the WRONG conclusion survived, which is the reusable part.** The fixture methods `Game::Commit`/`Suppress`
-were added FOR this test — their comments read *"a forwarding hook lets the +7 apply"* / *"a suppressing hook skips
-the +99"* — but only their SIGNATURE was ever asserted (`TaskFlipCases`: "Commit returns natural Task"). Writing the
-missing case made the suite green and felt like closure; what it actually proved was the parameterless shape, and
-**both fixture methods are parameterless**, so the case could not have found this even in principle. A fixture
-written to demonstrate a capability will demonstrate exactly the capability it was shaped for.
+Fixed by routing `Children.Count == 0` to that overload.
 
-The consumer's two workaround comments were also collapsed into one when they recorded **different exceptions**:
-`ForceLocalRaid.cs` cites `MissingMethodException` (the unflipped return — genuinely stale), while
-`GamePrepareGate.cs:122` cites *"`Proceed<Task>(...)` threw ArgumentOutOfRangeException instead of running"* — which
-is this live bug, correctly recorded, and dismissed as "the same documented boundary" by both the consumer and the
-review of it. **Two different exceptions under one label is a signal, not a duplicate.**
+**Why it hid, and this is the part worth keeping.** The dispatcher catches a post-`Proceed` throw *after*
+`ctx.Skip()` has run, so the frame already holds the ORIGINAL's return. The game gets a valid Task, the side effect
+still lands, and the failure surfaces only as a warning line. A case whose oracle is that side effect therefore
+passes over a completely broken marshalling path — which is exactly what `modhost.hook.nongeneric-task` did:
+reported GREEN while the game log carried
+`inutil hook Game::Commit threw ArgumentOutOfRangeException` on every run.
 
-`modhost.hook.nongeneric-task.with-args` now pins the real bound, over a new `Game::CommitWith(string, bool, int)`
-— it SKIPs until ToyGame is rebuilt (needs a Unity seat), and a skip there means *unproven*, never *fine*.
+So the earlier "arity" table was reading a correlation off two different phenomena: `Commit`/`Suppress` (0 args)
+appeared to work because the degradation was invisible, and `GamePrepare(bool)` genuinely works because
+`Task<IResult>` HAS a child. Nothing to do with arguments.
 
-**Consumer status:** all four raw-tier sites stay raw, and only one of them for a stale reason.
-`ForceLocalRaid.InternalStartGame` (3 args) and `StartTutorialGate.StartTutorial` (2 args) are blocked by the bug
-above. `ForceLocalRaidMode.OnReadyToStartMatchingAsync` takes 0 args and is on proven ground, but was reverted with
-the others rather than left as the single converted hook in a file whose sibling must stay raw. `AutoLogin`'s
-`add_OnLogin` is a genuinely different and still-current limit: its parameter is
+**GUARDRAIL, and it is the real deliverable.** `Suite.RunAll` now fails any case during which a hook FAULTED, even
+when the case's own assertions pass — phrased against the fact ("no case passes while a hook dispatch threw"), so it
+covers every present and future case with no opt-in. **Proven non-vacuous by sabotage**: reverting the one-line fix
+turns the battery RED with
+*"the case's own assertions passed, but a hook FAULTED during it — inutil hook Game::Commit threw
+ArgumentOutOfRangeException"*, and restoring it returns GREEN with zero faults in the game log (was one).
+
+Without that guardrail this class of bug is invisible by construction, and no amount of care in writing individual
+cases fixes it — every one of them would have to remember to check.
+
+**Consumer follow-up.** The three OpenTarkov sites (`ForceLocalRaid.InternalStartGame`,
+`ForceLocalRaidMode.OnReadyToStartMatchingAsync`, `StartTutorialGate.StartTutorial`) are now genuinely convertible;
+the conversion was attempted, failed on this bug, and reverted pending the fix. `AutoLogin`'s `add_OnLogin` stays
+raw for an unrelated and still-current reason: its parameter is
 `System.Action<string,string,bool,Il2CppSystem.Action<string,double>>`, a nested il2cpp delegate with no natural
-spelling, so hooking it ergonomically drags an `Il2Cpp*` spelling back into the consumer.
+spelling.
 
-`docs/reference/limits.md` was right all along — it scopes the failure to *"an **unflipped** il2cpp Task proxy"* and
-notes it is now rejected at Discover. The citation in `ForceLocalRaid.cs:14` points at
-`docs/guide/04-escape-hatches.md`, which contains no such boundary (that file is about `Safe`/`Invoke`/`Probe`/
-`Fields`) — a dangling reference that helped the claim look sourced.
+`docs/reference/limits.md` was right all along — it scopes its Task entry to *"an **unflipped** il2cpp Task proxy"*.
+The `MissingMethodException` that `ForceLocalRaid.cs:11-17` cites is that unflipped case and is genuinely stale;
+`GamePrepareGate.cs:122` cites the `ArgumentOutOfRangeException`, which was THIS bug, correctly recorded and read
+past by everyone including this file. **Two different exceptions under one label is a signal, not a duplicate.**
 
 ---
 

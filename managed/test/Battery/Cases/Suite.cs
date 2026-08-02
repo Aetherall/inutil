@@ -40,9 +40,33 @@ public sealed class Suite
         sink.Manifest(_cases.Select(c => c.id));
         foreach (var (id, body) in _cases)
         {
-            try { sink.Result(id, TestStatus.Pass, body()); }
+            // A hook that THREW during dispatch must fail its case, even when the case's own oracle is satisfied.
+            // The dispatcher catches a post-Proceed throw after ctx.Skip(), so the frame still holds the ORIGINAL's
+            // return: the game gets a valid value, the side effect still lands, and a case whose oracle is that side
+            // effect passes over a completely broken marshalling path. That is exactly how a non-generic
+            // `Proceed<Task>()` read `ArgumentOutOfRangeException` on every call while `modhost.hook.nongeneric-task`
+            // reported GREEN. Phrased against the FACT — "no case passes while a hook dispatch faulted" — so it
+            // covers every present and future case without any of them opting in.
+            var faults = new List<string>();
+            Action<string>? prevWarn = global::Inutil.Hooks.Hooks.OnWarning;
+            global::Inutil.Hooks.Hooks.OnWarning = w =>
+            {
+                if (w.Contains("threw", StringComparison.Ordinal)) faults.Add(w);
+                prevWarn?.Invoke(w);
+            };
+            try
+            {
+                string? detail = body();
+                if (faults.Count > 0)
+                    sink.Result(id, TestStatus.Fail,
+                        $"the case's own assertions passed, but a hook FAULTED during it — {faults[0]}"
+                        + (faults.Count > 1 ? $" (+{faults.Count - 1} more)" : ""));
+                else
+                    sink.Result(id, TestStatus.Pass, detail);
+            }
             catch (SkipException sk) { sink.Result(id, TestStatus.Skip, sk.Message); }
             catch (Exception ex) { sink.Result(id, TestStatus.Fail, $"{ex.GetType().Name}: {ex.Message}"); }
+            finally { global::Inutil.Hooks.Hooks.OnWarning = prevWarn; }
         }
         // Done LAST: its presence is what tells the aggregator the run completed rather than being killed.
         sink.Done();

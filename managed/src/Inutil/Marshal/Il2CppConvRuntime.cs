@@ -131,11 +131,22 @@ public sealed class Il2CppConvRuntime : IConvRuntime
         "INBOUND only (a hook RECEIVES a game callback param; the mirror's own Ok/Fail marshal outbound internally). " +
         "A hook cannot RETURN a callback. Fail-loud, never a silent mis-marshal.");
 
-    // node.Children[0] is the spelled element T; closing WrapTaskT<T> over it yields the natural Task<T> that
-    // carries the il2cpp task by identity (the one shared carrier — Task<T> : Task).
+    // Task ToManaged. A GENERIC Task<T> closes WrapTaskT<T> over node.Children[0] (the spelled element) — the
+    // natural Task<T> carrying the il2cpp task by identity (the one shared carrier — Task<T> : Task). A NON-GENERIC
+    // Task has NO element and so no child: it takes Il2CppSugar's non-generic WrapTask, which has always existed
+    // for exactly this and was simply never reached from here.
+    //
+    // This arm used to index Children[0] unconditionally, so every non-generic Task read threw
+    // ArgumentOutOfRangeException — `Proceed<Task>()` on any bare-Task method, always, regardless of arity. The
+    // ToIl2Cpp twin (ContainerBridge.DematerializeTask) has always branched on Children.Count; only the read side
+    // assumed generic. It hid because the dispatch catches a post-Proceed throw AFTER ctx.Skip(), so the frame
+    // already holds the ORIGINAL's return: the game still gets a valid Task and the side effect still lands, and
+    // the failure surfaces only as a warning line nobody was asserting on.
     static object? WrapTask(Conv node, object value)
-        => _wrapTaskT.MakeGenericMethod(node.Children[0].Managed)
-                     .Invoke(null, new object?[] { (Il2CppObjectBase)value });
+        => node.Children.Count == 0
+            ? Il2CppSugar.WrapTask((Il2CppObjectBase)value)
+            : _wrapTaskT.MakeGenericMethod(node.Children[0].Managed)
+                        .Invoke(null, new object?[] { (Il2CppObjectBase)value });
 
     // Unreachable safety net: the shape classifier emits only Leaf (routed through Leaf(), not here) and the container
     // kinds cased above (now including ConvKind.Object — the erased top — and ConvKind.Exception). Fail loud if a new

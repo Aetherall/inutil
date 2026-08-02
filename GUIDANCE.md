@@ -211,26 +211,25 @@ Until those land, keep them where they are — one named helper per repo beats t
 
 ## 8. When you have to drop to the raw hook tier
 
-**A `Task` return is only PARTLY one of those cases now — and the part that still bites is narrow and specific.**
-
-A non-generic `Task` with **arguments** cannot be forwarded ergonomically: `Proceed<Task>(a, b)` throws
-`ArgumentOutOfRangeException` out of the dispatch (the hook binds, its body runs, the original never does). A
-non-generic `Task` with **no** arguments works, and a generic `Task<T>` works with or without arguments. Keep the
-raw tier for the first shape only; the table in GAPS.md G8 has the measurements.
-What DOES work, proven in a booted game under both loaders (`modhost.hook.nongeneric-task`) — note both are
-parameterless, which is exactly the limit of that proof:
+**A `Task` return is no longer one of those cases — re-patch (§0) and use `Hook<T>`.** Both directions work,
+proven in a booted game under both loaders (`modhost.hook.nongeneric-task`):
 
 ```csharp
 Task Commit()   => Proceed<Task>();      // forward: the original runs, its task round-trips  (+7 lands)
 Task Suppress() => Task.CompletedTask;   // replace: the original is skipped, your task reaches the game (+99 does not)
 ```
 
-The `MissingMethodException: Constructor on type 'System.Threading.Tasks.Task' not found` that
-`clientfix/ForceLocalRaid.cs:11-17` cites is a *different* failure from the arg-bearing one, and that one really is
-stale: it is what an **unflipped** il2cpp Task proxy does, and the patch now flips those returns (check with
-`surface-query --methods` — a natural `System.Threading.Tasks.Task`, untagged). Two exceptions, two causes, one
-label — worth separating before concluding anything, because `GamePrepareGate.cs:122` records the *other* one
-(`ArgumentOutOfRangeException`) under the same heading and it is still live.
+Forwarding a NON-GENERIC `Task` was genuinely broken until recently, and it failed in the nastiest possible way:
+`Il2CppConvRuntime.WrapTask` indexed the Conv node's `Children[0]`, which a bare `Task` does not have, so every
+`Proceed<Task>()` threw `ArgumentOutOfRangeException`. The dispatcher catches a post-`Proceed` throw after
+`ctx.Skip()`, so the frame still held the ORIGINAL's return — the game got a valid Task, side effects still landed,
+and the only trace was a warning line. If you are reading an old workaround comment that cites that exception, it
+was real; it is fixed (GAPS.md G8), and the battery now fails any case during which a hook faulted.
+
+The other exception you may find in an old comment,
+`MissingMethodException: Constructor on type 'System.Threading.Tasks.Task' not found`, is a DIFFERENT and also-stale
+failure: it is what an **unflipped** il2cpp Task proxy does. Check with `surface-query --methods` — a natural
+`System.Threading.Tasks.Task` and no `[raw il2cpp]` tag means you are on the flipped path.
 
 What still *does* need the raw tier: a parameter with no natural spelling. `AutoLogin`'s
 `add_OnLogin(System.Action<string,string,bool,Il2CppSystem.Action<string,double>>)` is the live example — a nested
