@@ -20,6 +20,31 @@ namespace ToyGame
 
     public enum Faction { Usec, Bear, Scav }
 
+    // --- equality: the hash/equals PAIR the interop generator splits ---
+    // Il2CppInterop emits an override of GetHashCode() (the signature matches System.Object's) but NEVER an override
+    // of Equals(object) — the game's Equals takes il2cpp's Object, a DIFFERENT signature, so it lands as a sibling
+    // overload. A proxy of either type below therefore hashes by CONTENT and compares by WRAPPER IDENTITY: a managed
+    // Dictionary/HashSet/Contains finds the right bucket and then rejects the entry, so the lookup can never hit.
+    //
+    // ItemId is the paired shape (content hash + a typed Equals to source content equality from) — the ref-bearing
+    // value type case, which Il2CppInterop renders as a CLASS proxy, so it is not saved by ValueType's field-wise
+    // equality the way a blittable struct is. Ticket is the UNPAIRED shape: a content hash and NO equality member at
+    // all, which the patch can only pair down to pointer identity. Both are fixtures for EqualityRewriter.
+    public struct ItemId
+    {
+        public string Value;
+        public ItemId(string value) { Value = value; }
+        public bool Equals(ItemId other) => Value == other.Value;
+        public override int GetHashCode() => Value == null ? 0 : Value.GetHashCode();
+    }
+
+    public class Ticket
+    {
+        public int N;
+        public Ticket(int n) { N = n; }
+        public override int GetHashCode() => N;
+    }
+
     // --- interfaces: vtable/interface dispatch + the explicit-impl addressing case ---
     // Hooking an interface method exercises the virtualMethodPointer detour path. An EXPLICIT impl (Game.ITicker.Tick)
     // is the shape Il2CppInterop renders specially and the expression API can't cleanly name — a fixture for
@@ -273,6 +298,23 @@ namespace ToyGame
             foreach (var lo in gear) s += lo.Gold + lo.Owner.Length;
             return s;
         }
+        // ENUM-KEYED dict with a ref-bearing VALUE — the shape whose write goes through ValueTypeBridge.InvokeUnboxed
+        // (because the value is ref-bearing) and then hands the KEY to a GCHandle pin. A boxed enum is not blittable
+        // to the CLR marshaller, so an unfixed ArgPointer throws ArgumentException("Object contains non-primitive or
+        // non-blittable data") on a dictionary that type-checks perfectly. Distinct from SumBook (int key, which pins
+        // fine) precisely because only the KEY differs.
+        public int    SumByFaction(System.Collections.Generic.Dictionary<Faction, Loadout> roster)
+        {
+            int s = 0;
+            foreach (var kv in roster) s += (int)kv.Key + kv.Value.Gold + kv.Value.Owner.Length;
+            return s;
+        }
+
+        // Equality fixtures — producers, so IL2CPP keeps ItemId/Ticket in the build, and so a test can obtain a proxy
+        // from the GAME rather than constructing one (two distinct proxies over equal content is the whole point).
+        public ItemId MintItem(string value) => new ItemId(value);
+        public Ticket MintTicket(int n) => new Ticket(n);
+        public string DescribeItem(ItemId id) => id.Value;
         public Container<int>    MakeIntBox(int v)        { var c = new Container<int>();    c.Set(v); return c; } // value-T generic (own body)
         public Container<Player> MakePlayerBox(Player p)  { var c = new Container<Player>(); c.Set(p); return c; } // ref-T generic (__Canon)
         public Container<string> MakeStrBox(string s)     { var c = new Container<string>(); c.Set(s); return c; } // ref-T generic (shares __Canon)

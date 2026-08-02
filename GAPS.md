@@ -8,10 +8,16 @@ distinction earned its place here: two entries in the first draft of this file w
 plausible-looking signature dump or summary line was trusted over the compiler. See "How the wrong answers happened"
 at the end — the failure modes are reusable.
 
-**Status:** G3, G4, G10, G12 and G13 are closed and proven (G4 in-game under both loaders). G2 was mis-stated and is restated
-below as a design question needing a decision before any code. Remaining: **G11** (a container that compiles and
-throws — the one that makes the compiler a false oracle), G5's wiremap onboarding gap for CONSUMERS (G9 fixed
-inutil's own harness ordering, not a consumer's pipeline), then the ergonomic items (G6-G8).
+**Status:** G3, G4, G10, G12, G13 and G14 are closed and proven (G4 and G14 in-game under both loaders). G2 was
+mis-stated and is restated below as a design question needing a decision before any code. Remaining: **G11**
+(re-diagnosed below — much smaller than first recorded, and an ordinary fix), G5's wiremap onboarding gap for
+CONSUMERS (G9 fixed inutil's own harness ordering, not a consumer's pipeline), then the ergonomic items (G6-G8).
+
+**Three entries in this file have now been wrong on first writing (G2, G11, and G14's first fix), every time because
+a plausible reading was trusted over a measurement.** G14 is the sharpest case: the probe that "confirmed" the
+diagnosis was statically typed, which silently took a different dispatch path than the containers the bug lives in,
+and the resulting fix made things *worse* while passing every offline test. The in-game battery caught it. Prefer the
+oracle that runs the real shape.
 
 **G10 and G11 were found by ACTING on [GUIDANCE.md](./GUIDANCE.md), not by reading more code** — G10 by running §0
 (re-patch) on the consumer's real overlay, G11 by taking §4's advice and then probing it in a booted game. Both were
@@ -336,11 +342,29 @@ itself flags that compiling is not evidence for this one — probing it live ove
 throw reproduces on a bare descriptor with a single entry, so it is the property path itself, not anything about
 the consumer's data.
 
-The value type is the whole story: `MongoID` is ref-bearing, so the marshaller's blittable-copy path rejects the
-dictionary. inutil's own marshaller runs at **hook seams**, not on a direct proxy property call, so nothing
-re-flips this one at the point of assignment. Note the asymmetry with G-`ParentId`: a ref-bearing *`Nullable`* was
-made to work end-to-end; a ref-bearing dictionary *value* was not, and there is currently no signal that says so
-short of running it.
+**RE-DIAGNOSED — the first reading of this entry was wrong, and the correction narrows it sharply.** "A ref-bearing
+value type cannot cross" was inferred from the exception text; the stack says otherwise:
+
+```
+GCHandle..ctor -> ValueTypeBridge.ArgPointer -> ValueTypeBridge.InvokeUnboxed
+  -> ContainerBridge.DematerializeDictionary -> Conv.Convert -> Il2CppMarshal.ToIl2Cpp
+  -> EFT.ProfileDescriptor.set_Customization
+```
+
+The throw is **inutil's own**, and it is about the KEY, not the value. A ref-bearing value correctly routes the write
+through `ValueTypeBridge.InvokeUnboxed`; `ArgPointer` then pins each remaining argument with
+`GCHandle.Alloc(…, Pinned)`, which rejects a **boxed enum**. Confirmed standalone in a booted game:
+`GCHandle.Alloc((object)EBodyModelPart.Head, Pinned)` throws that exact `ArgumentException`. A `Dictionary<string,
+MongoID>` takes `ArgPointer`'s `case string` arm and never reaches the pin, so it is not the ref-bearing value that
+blocks this — it is **enum key + ref-bearing value**, together.
+
+So the failing shape is much smaller than recorded, and the fix is ordinary: normalize the argument to the blittable
+primitive whose bytes il2cpp expects (an enum through its underlying type), exactly as `ArgPointer` already does for
+`bool` and `char`. Worth doing as an invariant rather than a third special case — the switch is an enumeration of the
+values that have bitten so far, with `decimal` and `nint` sitting behind `enum` — and worth noticing that
+OpenTarkov's workaround passes `(int)part` at its own call site, i.e. it is this same fix applied one layer too high.
+
+Still open only because it was found while fixing G14 and is out of that change's scope.
 
 Two things worth deciding: whether the container flip should refuse to naturalize a member it cannot marshal (so
 the compiler goes back to being the oracle), and — either way — whether `surface-query` should mark such a member,
@@ -413,6 +437,84 @@ kill, one level up.
 `WireAttributeRewriter.Stamp` now returns `WireStampResult(Stamped, AlreadyPresent)` — the count it added AND the
 count already there — the CLI prints both, and `validate.sh` fails only when both are zero. Pinned in
 `WireAttributeTests`: a re-run stamps 0 and reports 3 already present.
+
+---
+
+## G14 — the whole proxy tree's equality hangs off a slot the CLR never dispatches to — **CLOSED**
+
+**Severity: high**, and of the silent kind: nothing throws, nothing fails to compile, and every hash lookup over a
+proxy is simply always wrong.
+
+Il2CppInterop gives `Il2CppSystem.Object` its own `GetHashCode()`, `Equals(Il2CppSystem.Object)` and `ToString()`,
+and emits them **NEWSLOT** — brand-new virtual slots that do not override `System.Object`'s. Every proxy in the tree
+descends from that root, so the generated overrides sit on a *parallel* vtable the CLR never reaches through `object`:
+
+```
+Il2CppSystem.Object::GetHashCode()          virt=True  newslot=TRUE    <- a NEW slot, not an override
+UnityEngine.AnimationCurve::GetHashCode()   virt=True  newslot=False   <- overrides the NEW slot, not Object's
+```
+
+The generated bodies are correct — they `il2cpp_runtime_invoke` the game's real method. Nothing calls them. Measured
+in a booted game on one `Event` object wrapped by two proxies:
+
+```
+a.GetHashCode() / b.GetHashCode()      -> 28991153 / 59593788     (System.Object's — WRAPPER identity)
+GetHashCode.Invoke(a) / .Invoke(b)     -> 37 / 37                 (the game's, via the generated body)
+```
+
+So `EqualityComparer<T>.Default`, `Dictionary`, `HashSet`, `List.Contains` and `object.Equals` all see wrapper
+identity for every proxy: `dict[new MongoID(id)]` cannot hit an entry the game put there, and two proxies over the
+**same** il2cpp object land in a `HashSet` twice.
+
+**How it hid for so long — and it nearly hid again here.** A statically-typed `mongoId.GetHashCode()` compiles to a
+direct `call`, which *does* reach the generated body and *does* return the game's content hash. The first probe of
+this was written that way, so the hash looked perfect and the bug looked like "hash right, equality wrong" — a split
+pair. The first version of the fix was built on that reading: per-type `Equals(object)` overrides sourced from each
+type's typed `Equals`. It passed every offline assertion and produced **a real Equals over a wrapper-identity hash**
+— equal keys in different buckets, strictly worse than before. The in-game battery caught it on the first run
+(`contains=True, count=2`), which is the entire argument for that gate existing.
+
+**This was inutil changing meaning at its own seam.** `ContainerBridge.MaterializeDictionary` builds
+`new Dictionary<K,V>()` with the default comparer, so a natural container handed to a consumer has *different lookup
+semantics from the game dictionary it was materialized from*. OpenTarkov's O(n) `MongoIds` scan-by-content helper
+exists to work around exactly this, and the one call site that had not been converted was a real behaviour bug (every
+trader read back at loyalty 1).
+
+**FIXED at the root, in two edits, by `EqualityRewriter`:**
+
+- `Il2CppSystem.Object::GetHashCode()` — clear NEWSLOT. Its signature already matches `System.Object::GetHashCode`,
+  so as a ReuseSlot it becomes the override the generator should have emitted, and every derived `GetHashCode`
+  chains into `Object`'s slot with no per-type edit.
+- `Il2CppSystem.Object::Equals(object)` — **add** one. A flag cannot fix this half: the generated `Equals` takes
+  `Il2CppSystem.Object`, a different signature, so it can never fill `Object::Equals(object)`'s slot. The added
+  override forwards `callvirt` to `Equals(Il2CppSystem.Object)`, which dispatches to whatever the runtime type
+  declares — the game's own equality, content and all.
+
+Verified live against the real EFT tree: `dict[a]=7; dict[b]=9` with two equal-content `MongoID`s gives
+`count=1, lookup=True, value=9`, a different id still misses, and `HashSet{a,b,c}.Count == 2`.
+
+Three things worth keeping:
+
+- **Fix the slot, not the types.** The per-type version touched ~70 types across the tree and was wrong. The root
+  version touches one type and is right, because every derived member already overrides the root's slots — the
+  hierarchy was correct all along, anchored one level too low.
+- **The marker had quietly stopped being an honest content-address.** `SchemaMarker.Hash` hashes
+  `Families.Default()`, which was the full description of a patch only while every rewriter was registry-driven. This
+  pass flips on a generation fact, so a tree patched before it and a tree patched after it would have addressed
+  IDENTICAL — a stale tree reporting itself current, the one failure the marker exists to prevent. `PatchCapabilities`
+  now folds in one row per non-registry pass, and `MarkerTests` proves the address is actually sensitive to that list
+  by varying it (with the production list a constant, "it folds them in" is otherwise unfalsifiable).
+- **`ToString()` has the identical defect and is deliberately NOT fixed.** It is newslot too, so `$"{proxy}"` prints
+  the proxy's type name rather than the game's string. Reconnecting it would change the text of every log line in
+  every consumer — worth doing deliberately, not as a side effect of an equality fix. `EqualityRewriter.Shadowed()`
+  names it rather than omitting it.
+
+**What is proven, and where.** Offline: the two root edits, the virtual dispatch in the added body, idempotency, the
+refusals, and the postcondition (`Shadowed` — read off the post-patch module, not off the pass's bookkeeping), with
+non-vacuity asserted first. In-game under both loaders: two wrappers over one object now compare equal, hash equal,
+and share a `Dictionary` entry. The CONTENT case as a *ToyGame* fixture (`ItemId`, separately minted equal-content
+proxies) is added to `testgame/` but SKIPs until someone with a Unity seat runs `toygame-build`; it is proven on the
+real EFT tree in the meantime.
 
 ---
 

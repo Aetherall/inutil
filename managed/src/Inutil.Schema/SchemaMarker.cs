@@ -32,12 +32,22 @@ public static class SchemaMarker
     const string InteropTag = "inutil-interop-marker/1";
     const string WireTag = "inutil-wire-marker/1";
 
-    // The content-address of the natural-typing registry (Families.Default()) that drove a proxy patch. Captures
-    // every fact the IL-rewrite seam flips on (anchor, BCL counterpart, ConvKind, write-target, shape, direction),
-    // one canonical line per family. Same family set (any order) hashes equal; changing any fact changes the hash
-    // — exactly "these proxies are stale". Sound because every rewriter builds from this one registry, so it IS
-    // the full description of what a patch does — hashing it is the honest content-address, not a proxy for it.
-    public static string Hash(CorrespondenceRegistry registry)
+    // The content-address of a proxy patch: the natural-typing registry (Families.Default()) that drove it, PLUS
+    // every capability the patch has that the registry does not describe (PatchCapabilities). The registry half
+    // captures each fact the IL-rewrite seam flips on (anchor, BCL counterpart, ConvKind, write-target, shape,
+    // direction), one canonical line per family; same family set (any order) hashes equal, and changing any fact
+    // changes the hash — exactly "these proxies are stale".
+    //
+    // The capability half is what keeps that claim TRUE. Hashing the registry alone was sound only while every
+    // rewriter was registry-driven; a pass that flips on something else (equality pairing) would otherwise leave a
+    // tree patched without it addressing identical to one patched with it. Both halves, or the address is a
+    // description of part of the patch presented as a description of all of it.
+    public static string Hash(CorrespondenceRegistry registry) => Hash(registry, PatchCapabilities.All);
+
+    // The capability list is a PARAMETER here only so a test can prove the address is actually sensitive to it —
+    // with the list fixed at a constant, "the hash folds in capabilities" is otherwise unfalsifiable. Production
+    // callers use the one-arg form; there is no second capability set in the wild.
+    public static string Hash(CorrespondenceRegistry registry, IEnumerable<string> capabilities)
     {
         IEnumerable<string> rows = registry.All.Select(c => string.Join("|",
             c.Il2CppFullName,
@@ -46,7 +56,7 @@ public static class SchemaMarker
             c.WriteTarget ? "W" : "-",
             c.Shape.ToString(),
             c.Direction.ToString()));
-        return HashRows(InteropTag, rows);
+        return HashRows(InteropTag, rows.Concat(capabilities.Select(c => "capability|" + c)));
     }
 
     // The STRUCTURAL address of the wire registry (WireFamilies.Default()) — one line per recognizer (attribute

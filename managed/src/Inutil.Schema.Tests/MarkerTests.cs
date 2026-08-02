@@ -42,6 +42,18 @@ static class MarkerTests
         T.Check("SchemaMarker.Hash is sensitive to a changed fact (writeTarget)",
             SchemaMarker.Hash(ab) != SchemaMarker.Hash(abChanged));
 
+        // The address must move for a patch capability the registry does not describe (equality pairing is the first
+        // one). Without this the marker would report a tree patched by an older build as CURRENT — the single failure
+        // the marker exists to prevent. Asserted by VARYING the capability list, since the production list is a
+        // constant and "it folds them in" is otherwise unfalsifiable.
+        T.Check("SchemaMarker.Hash is sensitive to the CAPABILITY set (a non-registry pass changes the address)",
+            SchemaMarker.Hash(ab, new[] { "cap/1" }) != SchemaMarker.Hash(ab, new[] { "cap/1", "other/1" })
+            && SchemaMarker.Hash(ab, Array.Empty<string>()) != SchemaMarker.Hash(ab, new[] { "cap/1" }));
+        T.Check("...and to a capability's REVISION (bumping a tag restamps every tree)",
+            SchemaMarker.Hash(ab, new[] { "cap/1" }) != SchemaMarker.Hash(ab, new[] { "cap/2" }));
+        T.Check("...and the real registry declares at least one capability (non-vacuity)",
+            PatchCapabilities.All.Count > 0);
+
         // The real registry: deterministic + a well-formed 64-char lowercase-hex SHA-256.
         string h1 = SchemaMarker.Hash(Families.Default());
         string h2 = SchemaMarker.Hash(Families.Default());

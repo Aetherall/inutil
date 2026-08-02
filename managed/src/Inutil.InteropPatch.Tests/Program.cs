@@ -26,6 +26,8 @@ Console.WriteLine(">> non-virtual GENERIC Task flip incl. nested Task<Result<!!0
 offlineFailures += NonVirtualGenericTaskFlipTests.Run();
 Console.WriteLine(">> wire-attribute re-attachment: stamp recovered [JsonPropertyName] onto proxy members (synthetic Cecil)");
 offlineFailures += WireAttributeTests.Run();
+Console.WriteLine(">> equality pairing: an Equals(object) sourced where GetHashCode came from (synthetic Cecil)");
+offlineFailures += EqualityPairingTests.Run();
 
 // ── the real Cecil rewrite over provisioned proxies (needs a game; gracefully skipped if unprovisioned) ──
 string? interopDir = Environment.GetEnvironmentVariable("INUTIL_INTEROP_DIR")

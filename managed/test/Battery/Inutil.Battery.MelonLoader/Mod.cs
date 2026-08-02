@@ -26,6 +26,7 @@ public sealed class BatteryMelonMod : MelonMod
             ContainerFlipCases.Register(suite);
             HookCases.Register(suite);   // native hook engine — its first case attaches inutil_core.dll
             ValueTypeCases.Register(suite);   // ValueTypeBridge — ref-bearing VT in tuple/dict container writes
+            EqualityCases.Register(suite);   // EqualityRewriter — a proxy's Equals(object) paired with its GetHashCode source
             ModHostCases.Register(suite);   // CAPSTONE — a compiled Hook<Game> mod fires (namespace adapted to Il2CppToyGame)
             CallbackCases.Register(suite);   // ConvKind.Callback — the inbound callback mirror end-to-end (needs the ToyGame fixture rebuild; SKIPs otherwise)
             ReplCases.Register(suite);   // the in-game C# REPL: Roslyn evaluates live submissions that hook the running game

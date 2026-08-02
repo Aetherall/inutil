@@ -169,6 +169,32 @@ The prerequisite is running `inutil-metadata-extract`; the pipeline currently st
 `inutil-check` (`dev-attach.sh:56`). Until then, prefer §2's typed setters for these types — the shape API is not
 available to them at all.
 
+## 6b. Proxy keys work now — delete the content-scan helpers (needs a re-patch, §0)
+
+A dictionary or set keyed by a game proxy used to be unusable: `dict[new MongoID(id)]` never hit an entry the game
+put there, `list.Contains(id)` never matched, and a guarded `Add` after it silently duplicated. Nothing threw, so the
+symptom was always some downstream default — `RagfairSearch.TraderLoyalty` silently returned 1 for every trader.
+
+The cause was not the game's types. Il2CppInterop emitted `Il2CppSystem.Object`'s `GetHashCode`/`Equals` as NEWSLOT
+virtuals, so the whole proxy tree's equality sat on a slot the CLR never dispatches through — every managed hash
+container saw *wrapper identity* for both members (GAPS.md G14). The patch reconnects them at the root, so a proxy
+now hashes and compares by the game's own rule:
+
+```csharp
+var d = new Dictionary<EFT.MongoID, int>();
+d[new EFT.MongoID(id)] = 7;
+d[new EFT.MongoID(id)] = 9;      // same content -> OVERWRITES; d.Count == 1, d[new MongoID(id)] == 9
+```
+
+Verified live. So a consumer-side content-scan helper — OpenTarkov's `MongoIds.Key/TryGet/Has/Set/Contains/AddIfAbsent`,
+every one an O(n) walk comparing `ConvertToString()` — is now redundant, and the plain BCL spelling is both correct
+and faster. Delete it call-site by call-site rather than in one sweep: each site is a behaviour change (a lookup that
+used to miss may now hit), which is the *point*, but it is worth seeing each one.
+
+Two things this does NOT change. `ToString()` on a proxy still prints the proxy's type name, not the game's string —
+the same newslot defect, deliberately left alone because fixing it rewrites every log line (GAPS.md G14). And a
+proxy whose game type defines no equality still compares by identity; that is the game's own answer, not a gap.
+
 ## 7. Helpers worth deleting once inutil grows them
 
 Consumer-local reimplementations of things that belong upstream (tracked as GAPS.md G6):

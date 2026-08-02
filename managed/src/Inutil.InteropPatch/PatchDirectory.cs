@@ -77,6 +77,13 @@ public static class InteropPatcher
                 // wearing a naturalizable il2cpp type (Nullable or container), and is there a known reason? (See ResidualAudit.)
                 residual.AddRange(ResidualAudit.Scan(module));
 
+                // The equality pass's POSTCONDITION, read off the post-patch module rather than off the pass's own
+                // bookkeeping: any type still shadowing a System.Object virtual with a parallel newslot is one whose
+                // equality the CLR cannot reach. Reported through the same channel as a naturalization hole because
+                // it is the same kind of thing — a member a consumer meets in a shape that silently misbehaves.
+                foreach (string t in EqualityRewriter.Shadowed(module))
+                    residual.Add(new Residual(name, t, "a System.Object virtual is shadowed by a parallel newslot — the CLR never dispatches to it", true));
+
                 if (result.Flipped > 0 || normalized)
                 {
                     AtomicWrite(module, path);
@@ -133,8 +140,10 @@ public static class InteropPatcher
     // at a time and must apply the IDENTICAL rewrite in memory (the byte-loaded copies and the later disk persist may
     // never diverge — same passes, same order, one implementation). Order: Task (return flip), container-return
     // (materialize), value/ref-bearing Nullable-return (full-body replace), the Nullable FIELD/PROPERTY accessor pass
-    // (getter tail-swap + setter rebuild), arrays, then the UNIFIED param pass (ParamRewriter). Each pass is
-    // independently idempotent, so the whole patch is.
+    // (getter tail-swap + setter rebuild), arrays, then the UNIFIED param pass (ParamRewriter), and finally equality
+    // pairing (EqualityRewriter — the one pass that flips on a GENERATION fact rather than a correspondence row, and
+    // so the one the marker needs PatchCapabilities to see). Each pass is independently idempotent, so the whole
+    // patch is.
     //
     // AFTER the flip, NormalizeCoreLibRef makes the proxy's BCL reference self-consistent: Il2CppInterop's generator
     // stamps System.Private.CoreLib at the GENERATOR host's version (net9) while the assembly TARGETS net6 (its
@@ -150,7 +159,8 @@ public static class InteropPatcher
             .Merge(new NullableFieldRewriter().RewriteModule(module))
             .Merge(new ContainerFieldRewriter().RewriteModule(module))
             .Merge(new ArrayRewriter().RewriteModule(module))
-            .Merge(new ParamRewriter().RewriteModule(module));
+            .Merge(new ParamRewriter().RewriteModule(module))
+            .Merge(new EqualityRewriter().RewriteModule(module));
         bool normalized = NormalizeCoreLibRef(module);
         return (result, normalized);
     }
