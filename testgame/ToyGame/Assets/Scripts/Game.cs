@@ -368,6 +368,37 @@ namespace ToyGame
         public System.Threading.Tasks.Task<T> LoadTyped<T>() where T : class => System.Threading.Tasks.Task.FromResult<T>(null);
         public string RoundTripTyped() { Player p = LoadTyped<Player>().Result; return p != null ? p.Name : "null"; }
 
+        // GENERIC METHOD whose flippable members are MIXED — some fully CLOSED, some genuinely open. The shape that
+        // showed the passes were gating genericity on the wrong UNIT.
+        //
+        // Every candidacy gate read `!m.HasGenericParameters` — "is the METHOD generic" — and so excluded members like
+        // these outright. The real condition belongs to the TYPE being flipped: `float?` has nothing whatever to do
+        // with T and converts through a perfectly closed helper, while `Action<T>` and the T return have no closed
+        // natural type at all. Measured on a real game (EFT's ActiveHealthController::AddEffect<TEffect>, the same
+        // shape): 23 members left raw, and left INVISIBLE rather than deferred — a non-candidate produces no flip, no
+        // defer, no log line, so only the residual audit could see them.
+        //
+        // The fixture carries BOTH halves on ONE method on purpose. A flip that is too timid (leaves bonus/penalty
+        // raw) and one that is too eager (touches onInit or the T return) are both regressions, and a fixture with
+        // only closed params could not catch the second.
+        //
+        // NoInlining + an observable side effect so IL2CPP keeps a real methodPointer and the battery can prove the
+        // call actually RAN, not merely that the signature changed.
+        public float LastInfuse;
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        public T Infuse<T>(float? bonus, float? penalty, System.Action<T> onInit, T seed) where T : class
+        {
+            if (onInit != null) onInit(seed);
+            LastInfuse = (bonus ?? 0f) * 10f + (penalty ?? -1f);
+            return seed;
+        }
+        public float PeekLastInfuse() => LastInfuse;
+
+        // The RETURN twin: a generic method whose RETURN is a fully closed container. Same wrong-unit exclusion on the
+        // return families (ContainerFamily / NullableFamily), same fix.
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        public List<int> Ledger<T>(T tag) where T : class => new List<int> { 1, 2, 7 };
+
         // NESTED BCL result: Task<Player[]> (a Task whose result is an ARRAY of proxies). The interop-patch flips the
         // Task; the ELEMENT stays Il2CppReferenceArray<Player>, so a hook may spell the fully-natural System.Task<Player[]>
         // and the recursive boundary converts the managed Player[] back to the il2cpp array before FromResult.

@@ -143,6 +143,12 @@ public class Bootstrap : MonoBehaviour
         // generic-method Task<T> return, T only in the return: root LoadTyped<Player> + the RoundTripTyped read-back
         // so IL2CPP keeps the __Canon instantiation the flipped-Task generic-method hook binds to.
         System.Threading.Tasks.Task<Player> typed = _g.LoadTyped<Player>(); string rtt = _g.RoundTripTyped();
+        // GENERIC METHOD with MIXED members (Game::Infuse<T> — closed float? params beside an open Action<T> and T
+        // return; Game::Ledger<T> — a closed List<int> return). Root the Player instantiation so IL2CPP keeps a real
+        // methodPointer for each: an un-rooted generic method has no instantiation to patch or bind, which would make
+        // the fixture pass for the wrong reason.
+        Player infused = _g.Infuse<Player>(1f, 2f, null, _p); float lastInf = _g.PeekLastInfuse();
+        List<int> ledger = _g.Ledger<Player>(_p);
         // nested BCL result: root Task<Player[]> + Task<Player[][]> + their read-backs so IL2CPP keeps
         // FetchSquad/FetchFormations (the shapes whose Task result-array a recursive hook fabricates natural).
         string rts = _g.RoundTripSquad(); string rtf = _g.RoundTripFormations();

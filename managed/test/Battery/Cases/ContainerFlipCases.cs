@@ -607,6 +607,96 @@ public static class ContainerFlipCases
                 $"ForEachScore(cb) invoked the managed lambda {captured.Count}x with [{string.Join(",", captured)}], expected 1x [{score}] — the delegate did not round-trip through op_Implicit");
             return $"ForEachScore(bare System.Action<int>) -> game called cb({score}): managed lambda fired {captured.Count}x, captured [{string.Join(",", captured)}] (op_Implicit round-trip)";
         });
+
+        // GENERIC METHODS with MIXED members — Game::Infuse<T>(float?, float?, Action<T>, T) : T and
+        // Game::Ledger<T>(T) : List<int>.
+        //
+        // Every candidacy gate used to read `!m.HasGenericParameters` — gating on "is the METHOD generic" — which is
+        // the wrong unit. The condition belongs to the TYPE being flipped: `float?` and `List<int>` are fully closed
+        // and convert through perfectly closed helpers, while `Action<T>` and a `T` return have no closed natural
+        // type at all. Excluding the whole method left ALL of them raw, and left them INVISIBLE rather than deferred
+        // (a non-candidate produces no flip, no defer, no log line) — 23 of 34 unexplained residuals on a real game.
+        //
+        // Both directions are asserted on the SAME method, because both are regressions: too timid (bonus/penalty
+        // left raw) and too eager (touching onInit or the T return, which cannot be closed). This is also the first
+        // time the rewriter splices into a generic method's BODY, so `runs` — invoking a real instantiation in a
+        // booted game — is the case that matters; `deployed` alone would only prove the signature was edited.
+        suite.Add("generic-method.mixed.flip.deployed", () =>
+        {
+            MethodInfo mi = FindProxyMethod("Game", "Infuse", out string typeName);
+            ParameterInfo[] ps = mi.GetParameters();
+            Check.True(ps.Length == 4, $"{typeName}::Infuse has {ps.Length} params, expected 4 — the fixture changed");
+
+            foreach (int i in new[] { 0, 1 })
+            {
+                string pt = ps[i].ParameterType.FullName ?? ps[i].ParameterType.Name;
+                Check.True(pt.StartsWith("System.Nullable", StringComparison.Ordinal),
+                    $"{typeName}::Infuse param {i} ('{ps[i].Name}') is '{pt}' — a CLOSED Nullable param on a generic method did not flip");
+            }
+            // The other half: an open member must be left ALONE. A flip here would have no closed natural type to
+            // convert through, so this is not a missed opportunity — it is the boundary.
+            // Namespace, not FullName: a generic type closed over an open METHOD type parameter (Action<T> here) has
+            // a NULL FullName, so the usual `FullName ?? Name` renders a bare "Action`1" and a Contains-check on the
+            // il2cpp namespace fails against correct behaviour. Namespace survives the open instantiation.
+            Type onInit = ps[2].ParameterType;
+            Check.True(onInit.Namespace == "Il2CppSystem",
+                $"{typeName}::Infuse param 2 ('onInit') is in namespace '{onInit.Namespace}' ({onInit.Name}) — an Action<T> mentioning the method's generic parameter must NOT flip");
+            Check.True(mi.ReturnType.IsGenericParameter,
+                $"{typeName}::Infuse returns '{mi.ReturnType.FullName ?? mi.ReturnType.Name}', expected the open T — a generic return must NOT flip");
+
+            MethodInfo led = FindProxyMethod("Game", "Ledger", out _);
+            string lrt = led.ReturnType.FullName ?? led.ReturnType.Name;
+            Check.True(lrt.StartsWith("System.Collections.Generic.List", StringComparison.Ordinal),
+                $"{typeName}::Ledger returns '{lrt}' — a CLOSED container return on a generic method did not flip");
+
+            return $"{typeName}::Infuse<T>(float?, float?, Il2CppSystem.Action<T>, T) : T — closed params flipped, open members left alone; " +
+                   $"::Ledger<T> returns natural {lrt}";
+        });
+
+        suite.Add("generic-method.mixed.flip.runs", () =>
+        {
+            MethodInfo mi = FindProxyMethod("Game", "Infuse", out string typeName);
+            MethodInfo peek = FindProxyMethod("Game", "PeekLastInfuse", out _);
+            MethodInfo led = FindProxyMethod("Game", "Ledger", out _);
+            Type playerT = FindProxyType("Player", out _);
+
+            object game, player;
+            try { game = Construct(mi.DeclaringType!); player = ConstructPlayer(playerT); }
+            catch (Exception ex) { Check.Skip($"il2cpp proxy construction not reachable: {ex.GetType().Name}: {ex.Message}"); return null; }
+
+            // The instantiation the fixture roots in Bootstrap.Exercise, so IL2CPP kept a real methodPointer for it.
+            MethodInfo closed = mi.MakeGenericMethod(playerT);
+            object? ret;
+            try { ret = closed.Invoke(game, new object?[] { 1f, 2f, null, player }); }
+            catch (TargetInvocationException tie)
+            {
+                Check.True(false, $"invoking the flipped Infuse<Player> threw {tie.InnerException?.GetType().Name}: " +
+                                  $"{tie.InnerException?.Message} — the entry dematerialization spliced into a GENERIC method body did not run");
+                return null;
+            }
+
+            // The game's OWN read of what the body computed: bonus*10 + penalty. Proves the spliced converters
+            // produced real il2cpp Nullables the body could unwrap — not that the signature merely says float?.
+            float last = Convert.ToSingle(peek.Invoke(game, null));
+            Check.True(Math.Abs(last - 12f) < 0.001f,
+                $"Infuse<Player>(1f, 2f, null, player) then PeekLastInfuse() = {last}, expected 12 — the closed Nullable params did not dematerialize correctly inside a generic method");
+            Check.True(ReferenceEquals(ret, player) || ret is not null,
+                "Infuse returned null — the open T return did not pass through");
+
+            object? ledger;
+            try { ledger = led.MakeGenericMethod(playerT).Invoke(game, new object?[] { player }); }
+            catch (TargetInvocationException tie)
+            {
+                Check.True(false, $"invoking the flipped Ledger<Player> threw {tie.InnerException?.GetType().Name}: " +
+                                  $"{tie.InnerException?.Message} — the return tail-swap spliced into a GENERIC method body did not run");
+                return null;
+            }
+            Check.True(ledger is List<int> l && l.Contains(7),
+                $"Ledger<Player> returned {ledger?.GetType().FullName ?? "null"} — expected a REAL BCL List<int> containing the literal 7");
+
+            return $"Infuse<Player>(1f, 2f, null, player) -> game computed LastInfuse={last} (closed Nullables dematerialized in a generic body); " +
+                   $"Ledger<Player> -> natural List<int> [{string.Join(",", (List<int>)ledger!)}]";
+        });
     }
 
     // Find a loaded proxy TYPE by simple name. Distinct from FindProxyMethod(...).DeclaringType, which resolves to

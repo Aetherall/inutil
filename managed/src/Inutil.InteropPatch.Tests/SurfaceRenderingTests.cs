@@ -80,18 +80,24 @@ static class SurfaceRenderingTests
 
         // ── 2. the rendered OUTPUT a human reads must carry the warning tag ──
         // Through TypeSurface itself: a predicate that is right while the printer drops the tag helps nobody.
-        var sample = raw.Select(r => r.Type)
-                        .Where(t => !t.HasGenericParameters)       // `methods Foo\`1` resolves; keep the sample simple
-                        .Distinct()
-                        .Take(5).ToList();
-        foreach (TypeDefinition t in sample)
+        // Sample only types the verb can actually RESOLVE. TypeSurface refuses compiler-generated types (closures,
+        // state machines) and reports ambiguity for a name several types share — neither produces a surface, so a
+        // sample landing on one asserts nothing about the tagging and fails for the wrong reason. Which types those
+        // are depends on the fixture, so this filters on the verb's own verdict rather than guessing the shapes.
+        int sampled = 0;
+        foreach (TypeDefinition t in raw.Select(r => r.Type).Where(t => !t.HasGenericParameters).Distinct())
         {
+            if (sampled == 5) break;
             var res = ReverseIndex.TypeSurface(modules, Naming.CleanTypeName(t), 500);
+            if (res.Status != "ok") continue;
+            sampled++;
             bool tagged = res.Text.Contains("[raw il2cpp]", StringComparison.Ordinal);
             bool legend = res.Text.Contains("natural typing does NOT reach it", StringComparison.Ordinal);
             Check($"TypeSurface flags il2cpp spellings: {t.Name}", tagged && legend,
                   tagged ? (legend ? null : "tagged but no legend") : "no [raw il2cpp] tag in the rendered output");
         }
+        Check("surface rendering: at least one resolvable type was sampled for the tag", sampled > 0,
+              "every raw-bearing type was compiler-generated or ambiguous — the tagging cases proved nothing");
 
         // ── 3. the specific collapse that caused the incident, stated as itself ──
         // A regression test on top of the general invariant above: Nullable and the array wrappers are the two
