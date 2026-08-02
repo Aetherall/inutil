@@ -145,16 +145,18 @@ overlay the patcher reports:
 >> wire-attrs: no usable wiremap at …/inutil.wiremap.json — skipped (proxies keep member-name serialization)
 ```
 
-Two consequences, both silent:
+Two consequences. Neither is silent — this is a capability being switched off, not a correctness bug:
 
-- **The key check is inert.** With no recovered members, `ToNode` cannot reject a typo — it passes keys through
-  rather than rejecting every one as unknown. The API still builds the object; it just stops being *checked*, which
-  is the entire reason to prefer it over a JSON string.
-- **`Wire.Serialize` writes nothing.** It is opt-in on recovered names by construction
-  (`managed/src/Inutil/Wire/Wire.cs:1-5`), so a proxy with no wire attributes serializes empty.
+- **The checked object-literal API is refused outright.** `Json.ToNode` throws on a type with no recovered members
+  (`managed/src/Inutil/Wire/Json.cs:94-99`), naming both possible causes. So `Json.To<T>(new { … })` cannot be used
+  for any EFT type until a wiremap exists — it does not silently degrade to unchecked.
+- **`Wire.Serialize` still produces correct JSON, via the game's serializer.** With no recovered members every value
+  takes the opaque path and is delegated to `Json.From` (`Wire.cs:84,125-137`), which reads the intact native
+  attributes. Right answers — but no advantage over the `Json.From` this code already calls everywhere.
 
-Running `inutil-metadata-extract` in the consumer's pipeline is the prerequisite. Until then, prefer §2's typed
-setters over the shape API for these types — an unchecked shape is not an improvement over a typed property write.
+The prerequisite is running `inutil-metadata-extract`; the pipeline currently stages only `inutil-interoppatch` and
+`inutil-check` (`dev-attach.sh:56`). Until then, prefer §2's typed setters for these types — the shape API is not
+available to them at all.
 
 ## 7. Helpers worth deleting once inutil grows them
 

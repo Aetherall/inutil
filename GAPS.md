@@ -147,22 +147,50 @@ what is left to tighten.
 
 ---
 
-## G5 — no wiremap in the consumer's pipeline, so two features are silently inert
+## G5 — the metadata pillar is never wired into a consumer's pipeline
 
-The patcher reports `no usable wiremap … — skipped (proxies keep member-name serialization)` on the consumer's
-overlay. Consequences, neither of which announces itself:
+Not "silently inert" — an earlier draft of this entry said the degraded paths fail quietly, and that was wrong in
+both directions. Nothing here is silent. The gap is that a whole pillar is simply switched off for the only real
+consumer, and nothing in the pipeline ever turns it on.
 
-- **`Wire.Serialize` writes nothing** — it is opt-in on recovered names by construction
-  (`managed/src/Inutil/Wire/Wire.cs:1-5`).
-- **The checked object-literal shape is unchecked** — with no recovered members there is nothing to validate keys
-  against, so `Json.To<T>(new { … })` builds the object but cannot reject a typo. Documented as a limit in
-  `docs/guide/05-wire-json.md`; the gap is that a consumer reaches for that API *for* the check and gets it silently
-  disabled.
+**What is missing.** `inutil-metadata-extract` recovers the authored JSON wire names that the IL2CPP proxy strips
+(Cpp2IL over `GameAssembly.dll` + `global-metadata.dat`) into `inutil.wiremap.json`; `WireAttributeRewriter` then
+re-attaches them as `[JsonPropertyName]` during the patch. On the consumer's overlay the patcher reports
+`no usable wiremap … — skipped (proxies keep member-name serialization)`, so **zero** attributes are stamped and
+every EFT type has zero recovered wire members.
 
-**Partly ours.** `inutil-metadata-extract` is optional in the bundle and this consumer never runs it — an
-onboarding/packaging gap, not merely their oversight. Worth making the degraded state loud at the call site
-("type X has no recovered wire members — the key check is disabled; run inutil-metadata-extract") rather than a
-quiet passthrough, consistent with the fail-loud promise.
+The cause is in the consumer's pipeline, and it is a single line: `dev-attach.sh:56` stages exactly two of the
+bundle's three CLIs —
+
+```sh
+cp -a "$bundle/tools/inutil-interoppatch" "$bundle/tools/inutil-check" "$tools/"
+```
+
+`inutil-metadata-extract` is never copied and never run; the string "wiremap" does not appear anywhere in that
+repo's scripts or CI.
+
+**What that costs, precisely — both verified against the code, not inferred:**
+
+- **The checked object-literal API is UNAVAILABLE, loudly.** `Json.ToNode` throws on a type with no recovered
+  members (`Json.cs:94-99`), naming both causes and telling the caller to use a JSON string instead. So
+  `Json.To<T>(new { … })` — the API [guide 5](./docs/guide/05-wire-json.md) recommends — cannot be used for any EFT
+  type at all. Not "unchecked": refused.
+- **`Wire.Serialize` degrades to the game's own serializer, correctly.** With zero recovered members every value
+  takes the opaque path (`Wire.cs:84`), which delegates the subtree to `Json.From` — the game's registered
+  Newtonsoft, reading the intact NATIVE attributes, so the output is fully wire-correct (`Wire.cs:125-137`). It
+  throws only if no serializer is registered, which this consumer does register (`MirrorShim.cs:18`). So
+  `Wire.Serialize` produces right answers here — it just has no advantage over the `Json.From` the consumer already
+  calls everywhere, because the engine-side path it exists to provide never engages.
+
+**So the failure is one of leverage, not correctness.** Two capabilities the pillar exists to deliver — checked
+shape keys, and serialization that does not route through the game's Newtonsoft — are unreachable for the consumer,
+and the only reason is that a tool inutil ships is not run.
+
+**Fix direction, and it is partly ours.** The extract is optional in the bundle and the patcher's "skipped" line is
+informational rather than a warning, so a consumer can complete a correct-looking install and never learn a pillar
+is dark. Options: have `inutil-interoppatch --game` run the extract itself when a wiremap is absent and the game
+artifacts are present (making it the default rather than a second step); or keep it separate but make the skip a
+loud warning naming the CLI. The consumer-side half is adding it to `dev-attach.sh`'s copy line and its patch step.
 
 ---
 
