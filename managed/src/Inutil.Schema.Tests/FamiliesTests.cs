@@ -34,6 +34,42 @@ static class FamiliesTests
         T.Check("ByConvKind(List) is List`1, never IReadOnlyList`1", reg.ByConvKind(ConvKind.List)?.BclOpenType == typeof(List<>));
         T.Check("IEnumerable<> -> ConvKind.Enumerable (read spelling)", reg.ByBclOpenType(typeof(IEnumerable<>))?.Kind == ConvKind.Enumerable);
 
+        // …and it IS flippable, which is a different question from being the write target. A member declared
+        // IReadOnlyList`1 rewrites to a natural IReadOnlyList<T> (its own BclOpenType, not List<T>) while List`1
+        // stays the one thing a List-kind value materializes INTO.
+        T.Check("IReadOnlyList is flippable (a spelling can be rewritten without BEING the write target)",
+            reg.ByBclOpenType(typeof(IReadOnlyList<>))?.IsFlippableContainer == true);
+        T.Check("IReadOnlyList is still NOT the write target", reg.ByBclOpenType(typeof(IReadOnlyList<>))?.WriteTarget == false);
+        T.Check("IReadOnlyList flips to its OWN spelling", reg.ByBclOpenType(typeof(IReadOnlyList<>))?.BclOpenType == typeof(IReadOnlyList<>));
+
+        // IEnumerable stays refused, and for a REASON rather than by listing it: its kind has no write target at
+        // all, so there is nothing to dematerialize into. This is the line between the two read-only spellings.
+        T.Check("IEnumerable is NOT flippable (ConvKind.Enumerable has no write target)",
+            reg.ByBclOpenType(typeof(IEnumerable<>))?.IsFlippableContainer == false);
+        T.Check("…and that is why: ByConvKind(Enumerable) is null", reg.ByConvKind(ConvKind.Enumerable) is null);
+
+        // THE INVARIANT the flip roster rests on, phrased against the fact rather than the four families that
+        // satisfy it today: anything the IL seam is willing to flip must have somewhere to be written back to.
+        // A future family registered as flippable with no write target fails HERE, not in a game.
+        foreach (TypeCorrespondence c in reg.All)
+        {
+            if (!c.IsFlippableContainer) continue;
+            int arity = c.BclOpenType.GetGenericArguments().Length;
+            T.Check($"flippable row {c.Il2CppFullName} has a write target for its kind",
+                reg.ByConvKind(c.Kind, arity) is not null);
+        }
+
+        // ByConvKind's own contract: EXACTLY ONE write-target row per (kind, arity). Nothing enforced this before —
+        // the lookup just returned the first match, so a second write-target row for a kind would have made
+        // resolution silently depend on registration order in Families.cs.
+        var seen = new HashSet<string>();
+        foreach (TypeCorrespondence c in reg.All)
+        {
+            if (!c.WriteTarget) continue;
+            string key = c.Kind + "/" + c.BclOpenType.GetGenericArguments().Length;
+            T.Check($"one write target for {key} (ByConvKind must not depend on registration order)", seen.Add(key));
+        }
+
         // MutableList — the WRITE-THROUGH IList<T> spelling. It shares the List row's List`1 anchor (one il2cpp type,
         // two hook spellings), so the invariants are: (a) site 3 classifies IList<> to its OWN kind; (b) site 2
         // resolves that kind to the concrete List`1 anchor (C2 validation + the write fallback target), WITHOUT

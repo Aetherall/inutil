@@ -91,7 +91,15 @@ schema than these proxies were patched with" ([interop-patch (11)](./11-interop-
 - **The registry drives *both* the read (BCL→ConvKind, shape) and the write (ConvKind→il2cpp name,
   container bridge) direction** — `ByConvKind` returns the write-target row, so a read-only spelling
   (`IReadOnlyList`) classifies to a sequence yet materializes into the concrete `List`. One column
-  (`WriteTarget`) keeps that exact.
+  (`WriteTarget`) keeps that exact: **exactly one write target per (kind, arity)**, asserted in
+  `FamiliesTests` rather than left to registration order.
+- **Being the write target and being flippable are different questions.** `WriteTarget` answers "is this
+  the row a value of the kind materializes INTO"; flippability asks "may a member wearing this spelling be
+  rewritten to its natural form", which needs only that the kind *has* a write target. `IsFlippableContainer`
+  keys on the KIND for that reason. `IReadOnlyList<T>` is the case that separates them — a member wearing it
+  flips to a natural `IReadOnlyList<T>`, and the write side dematerializes into the concrete il2cpp `List`
+  whose pointer is what a proxy setter or native call actually consumes. `IEnumerable<T>` stays refused
+  because `ConvKind.Enumerable` has **no** write-target row: nothing to write back into.
 - **Purity is load-bearing, not incidental.** Keeping Il2CppInterop and Cecil *out* is what lets the whole
   planning/classification layer be proven against synthetic type shapes before any real proxy exists.
 

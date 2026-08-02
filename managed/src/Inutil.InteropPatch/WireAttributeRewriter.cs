@@ -25,34 +25,38 @@ public sealed class WireAttributeRewriter
     const string AttrNamespace = "System.Text.Json.Serialization";
     const string AttrTypeName = "JsonPropertyNameAttribute";
 
-    // Stamp [JsonPropertyName("<wire>")] onto every proxy member the wiremap names. Returns the count stamped
-    // (0 => module unchanged, so the directory driver skips the atomic write).
-    public int Stamp(ModuleDefinition module, WireMap map)
+    // Stamp [JsonPropertyName("<wire>")] onto every proxy member the wiremap names. Returns BOTH what this pass
+    // added and what was ALREADY carrying its attribute — because the two answer different questions and only one of
+    // them is a failure. Stamped==0 alone is ambiguous: it means "the recovered names never reached the proxies" on a
+    // fresh tree and "there was nothing left to do" on an already-stamped one, and a caller that treats the event as
+    // the fact reds a perfectly good idempotent re-run (validate.sh did exactly that). AlreadyPresent is what makes
+    // the FACT — "the wire names ARE on the proxies" — checkable.
+    public WireStampResult Stamp(ModuleDefinition module, WireMap map)
     {
         MethodReference? ctor = null;       // built once, lazily — an untouched module never references System.Text.Json
         MethodReference? kindCtor = null;   // ditto for [Inutil.WireKind]
-        int stamped = 0;
+        int stamped = 0, already = 0;
         foreach (TypeDefinition type in module.GetTypes())
         {
             // Converter KIND on the TYPE (typeKinds): a "string"-kind type (e.g. MongoID) serializes as a bare string
             // wherever it appears, so the mark goes on the type, not each member. Enums are covered by the runtime's
             // global JsonStringEnumConverter, so they are NOT stamped (the mark is only for the handful the BCL can't infer).
             string? kind = map.KindOf(type.FullName);
-            if (kind == "string") stamped += AttachKind(module, type, kind, ref kindCtor);
+            if (kind == "string") stamped += AttachKind(module, type, kind, ref kindCtor, ref already);
 
             IReadOnlyDictionary<string, string>? members = map.ForType(type.FullName);
             if (members is null) continue;
             foreach (PropertyDefinition p in type.Properties)
-                if (members.TryGetValue(p.Name, out string? wire)) stamped += Attach(module, p, wire, ref ctor);
+                if (members.TryGetValue(p.Name, out string? wire)) stamped += Attach(module, p, wire, ref ctor, ref already);
             foreach (FieldDefinition f in type.Fields)
-                if (members.TryGetValue(f.Name, out string? wire)) stamped += Attach(module, f, wire, ref ctor);
+                if (members.TryGetValue(f.Name, out string? wire)) stamped += Attach(module, f, wire, ref ctor, ref already);
         }
-        return stamped;
+        return new WireStampResult(stamped, already);
     }
 
-    static int AttachKind(ModuleDefinition module, TypeDefinition type, string kind, ref MethodReference? ctor)
+    static int AttachKind(ModuleDefinition module, TypeDefinition type, string kind, ref MethodReference? ctor, ref int already)
     {
-        if (type.CustomAttributes.Any(a => a.AttributeType.Name == "WireKindAttribute")) return 0;   // idempotent
+        if (type.CustomAttributes.Any(a => a.AttributeType.Name == "WireKindAttribute")) { already++; return 0; }   // idempotent
         ctor ??= BuildWireKindCtor(module);
         var attr = new CustomAttribute(ctor);
         attr.ConstructorArguments.Add(new CustomAttributeArgument(module.TypeSystem.String, kind));
@@ -80,9 +84,9 @@ public sealed class WireAttributeRewriter
         return reference;
     }
 
-    static int Attach(ModuleDefinition module, ICustomAttributeProvider member, string wire, ref MethodReference? ctor)
+    static int Attach(ModuleDefinition module, ICustomAttributeProvider member, string wire, ref MethodReference? ctor, ref int already)
     {
-        if (member.CustomAttributes.Any(a => a.AttributeType.Name == AttrTypeName)) return 0;   // idempotent
+        if (member.CustomAttributes.Any(a => a.AttributeType.Name == AttrTypeName)) { already++; return 0; }   // idempotent
         ctor ??= BuildCtor(module);
         var attr = new CustomAttribute(ctor);
         attr.ConstructorArguments.Add(new CustomAttributeArgument(module.TypeSystem.String, wire));
@@ -106,4 +110,11 @@ public sealed class WireAttributeRewriter
         module.AssemblyReferences.Add(reference);
         return reference;
     }
+}
+
+// What one wire-attribute pass did to a module: what it ADDED, and what was already there. Distinguishing the two is
+// the whole point — see Stamp.
+public readonly record struct WireStampResult(int Stamped, int AlreadyPresent)
+{
+    public int Total => Stamped + AlreadyPresent;
 }

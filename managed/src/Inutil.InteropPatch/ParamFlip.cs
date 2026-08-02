@@ -25,7 +25,13 @@ public static class ParamFlip
     {
         MethodBody body = method.Body;
         body.InitLocals = true;
-        var local = new VariableDefinition(module.ImportReference(il2cppType));
+
+        // The local + castclass take the type the dematerialized value ACTUALLY arrives as, which differs from the
+        // declared param type for a read-only spelling (ContainerFlip.Il2CppWriteSpelling). Resolved HERE, in the one
+        // shared splice, rather than in each family that calls it — a family cannot forget what the mechanism does.
+        TypeReference il2cppWrite = ContainerFlip.Il2CppWriteSpelling(module, il2cppType) ?? il2cppType;
+
+        var local = new VariableDefinition(module.ImportReference(il2cppWrite));
         body.Variables.Add(local);
 
         // Redirect the ORIGINAL loads of the param to the (soon-to-be-filled) local. Done BEFORE inserting the
@@ -38,7 +44,7 @@ public static class ParamFlip
         Instruction first = body.Instructions[0];
         il.InsertBefore(first, Instruction.Create(OpCodes.Ldarg, param));
         il.InsertBefore(first, Instruction.Create(OpCodes.Call, module.ImportReference(toIl2Cpp)));
-        il.InsertBefore(first, Instruction.Create(OpCodes.Castclass, module.ImportReference(il2cppType)));
+        il.InsertBefore(first, Instruction.Create(OpCodes.Castclass, module.ImportReference(il2cppWrite)));
         il.InsertBefore(first, Instruction.Create(OpCodes.Stloc, local));
     }
 

@@ -45,7 +45,8 @@ supported.
 |---|---|---|---|
 | Task | `Task`, `Task<T>` | game → you | receive and `await` a game task |
 | List | `List<T>` | both | the concrete read/write container (a **copy** at the boundary) |
-| Read-only sequences | `IReadOnlyList<T>`, `IEnumerable<T>` | game → you | materialize *into* a `List<T>` |
+| Read-only list | `IReadOnlyList<T>` | both | materializes *into* a `List<T>`; writing back builds the game's concrete list |
+| Read-only sequence | `IEnumerable<T>` | game → you | materialize *into* a `List<T>` — read-only, there is no write target to build |
 | Mutable list view | `IList<T>` | both | a **live write-through view** of the game's own list — your `Remove`/`Add` land on the game's list, and `Proceed` forwards it by identity |
 | Set | `HashSet<T>` | both | its own target, not a List re-spelling |
 | Dictionary | `Dictionary<K,V>` | both | |

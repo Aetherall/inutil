@@ -8,7 +8,7 @@ distinction earned its place here: two entries in the first draft of this file w
 plausible-looking signature dump or summary line was trusted over the compiler. See "How the wrong answers happened"
 at the end — the failure modes are reusable.
 
-**Status:** G3, G4 and G10 are closed and proven (G4 in-game under both loaders). G2 was mis-stated and is restated
+**Status:** G3, G4, G10, G12 and G13 are closed and proven (G4 in-game under both loaders). G2 was mis-stated and is restated
 below as a design question needing a decision before any code. Remaining: **G11** (a container that compiles and
 throws — the one that makes the compiler a false oracle), G5's wiremap onboarding gap for CONSUMERS (G9 fixed
 inutil's own harness ordering, not a consumer's pipeline), then the ergonomic items (G6-G8).
@@ -351,6 +351,71 @@ with the re-probe recorded in the comment so the next reader does not re-derive 
 
 ---
 
+## G12 — the read-only-sequence refusal, and the flag that was doing two jobs — **CLOSED**
+
+**Severity: high**, by blast radius rather than by depth: one refused spelling silently refused every container that
+held it.
+
+`Families.cs` registered `Il2CppSystem…IReadOnlyList\`1` with `writeTarget: false`, and `IsFlippableContainer` READ
+that flag. But the flag answers a different question than the flip needs:
+
+| Question | Answer lives in | For IReadOnlyList |
+|---|---|---|
+| Is this the row a `ConvKind.List` value materializes INTO? | `WriteTarget` (`ByConvKind`'s contract — exactly one row per kind) | **no**, `List\`1` is |
+| May a member wearing this spelling be rewritten to natural? | *was* the same flag | should be **yes** |
+
+Conflating them meant a member typed `IReadOnlyList<T>` could never flip — and, because
+`ContainerFlip.Naturalize` defers a container whose element it cannot naturalize, neither could anything HOLDING
+one. In the consumer that was `RepeatableQuestTemplate.Rewards`
+(`Dictionary<EQuestStatus, IReadOnlyList<QuestReward>>`): both levels stayed il2cpp, and the by-name `TryCast`
+spelling spread to two of their own helper signatures.
+
+**What the fix is NOT.** Setting `writeTarget: true` would have given `ConvKind.List` two write-target rows, and
+`ByConvKind` returns the first match — so the "never a read-only spelling" guarantee would have silently become a
+fact about declaration order in `Families.cs`. `IsFlippableContainer` now keys on the KIND, `WriteTarget` is
+untouched, and the uniqueness `ByConvKind` always assumed is asserted (`FamiliesTests`) instead of assumed.
+
+**The part that could only be found by running it.** The write splice ends in `castclass <the il2cpp type>`, and the
+dematerialized value arrives as the CONCRETE `List\`1` — while Il2CppInterop renders `IReadOnlyList\`1` as its own
+`Il2CppObjectBase` subclass that `List\`1` does **not** implement. Castclassing the declared type compiles, patches,
+and throws in-game. The splice now takes its local + castclass from `ContainerFlip.Il2CppWriteSpelling` (the kind's
+concrete write target), which is sound because everything downstream is pointer-level — verified by reading the real
+generated bodies: a setter does `Il2CppObjectBaseToPtr` → `il2cpp_gc_wbarrier_set_field`, a call does
+`Il2CppObjectBaseToPtr` → `stind` into the args buffer. Resolved inside the ONE shared `ParamFlip.Splice`, so no
+family can be added that forgets it.
+
+**Where the line now sits, and why it is a reason rather than a list.** `IEnumerable<T>` stays refused because
+`ConvKind.Enumerable` has no write-target row at all — there is nothing to dematerialize into. Both halves are
+pinned in the battery: `container.readonlylist-param.flip.{deployed,runs}` and `container.enumerable-param.refusal`,
+over `Game::SumGroups(IReadOnlyList<Player[]>)` and `Game::SumSquads(IEnumerable<Player[]>)` — the same shape,
+differing only in the spelling.
+
+Proven on ToyGame under **both loaders**: GREEN 100/100 each (97 before). The flip is fully natural including the
+nested element — `IReadOnlyList<Il2CppReferenceArray<Player>>` → `IReadOnlyList<Player[]>` — and the schema hash is
+unchanged (`WriteTarget` never moved), so no already-patched interop dir goes stale.
+
+**Adjacent, NOT fixed:** a `Task<IReadOnlyList<T>>` return still flips only the Task and carries its element as-is
+(`Game::FetchRoster`). That is TaskFamily's standing shape for every element type, not specific to this spelling.
+
+---
+
+## G13 — the wire-attribute guard red a healthy re-run — **CLOSED**
+
+Found by running the loop above: the second `bepinex-validate` failed with *"the patch stamped 0 wire attributes
+despite a wiremap — recovered names did not reach the proxies"*, on a tree whose proxies demonstrably carried the
+attributes already (4 of them, readable with Cecil).
+
+The guard (G9's fix) checked the EVENT — did this run stamp anything — while the invariant it wanted is the FACT:
+are the recovered names on the proxies. The pass is idempotent by design, so on any already-stamped tree those two
+answers differ, and the check reds exactly when everything is fine. That is the same failure shape G9 set out to
+kill, one level up.
+
+`WireAttributeRewriter.Stamp` now returns `WireStampResult(Stamped, AlreadyPresent)` — the count it added AND the
+count already there — the CLI prints both, and `validate.sh` fails only when both are zero. Pinned in
+`WireAttributeTests`: a re-run stamps 0 and reports 3 already present.
+
+---
+
 ## Not a gap: ref-bearing `Nullable` (the `ParentId` case)
 
 Recorded because the first draft of this file listed it as an open high-severity defect, with a mechanism worked out
@@ -375,17 +440,17 @@ into four buckets, and only the first three are inutil's to close:
 | Site | Spelling | Bucket |
 |---|---|---|
 | `HandbookInfo<TData>.Categories/Items`, `BackendArrayDto<T>.Elements` | `Il2CppArrayBase<T>` over the type's OWN generic param | **G2** — element kind unknown at patch time |
-| `RepeatableQuestTemplate.Rewards` and everything it infects (`Dictionary<…, IReadOnlyList<QuestReward>>`, the `TryCast`es, two method signatures) | `Il2CppSystem.Collections.Generic.IReadOnlyList<T>` | by-design read-only refusal — but it **spreads**: the container holding it can't flip either |
+| ~~`RepeatableQuestTemplate.Rewards` and everything it infects~~ | ~~`Il2CppSystem…IReadOnlyList<T>`~~ | **FIXED — see G12** |
 | `HideoutAreaData.GlobalCustomization` values | `Il2CppSystem.Nullable<MongoID>` as a dictionary VALUE arg | nested — the ref-bearing Nullable flip that landed does not reach a generic argument |
 | `KeyToType(...)` → `Il2CppSystem.Type`, `GetRandomWeatherNode(Il2CppSystem.DateTime)`, `Cast<Il2CppSystem.Object>()` for the game's own Newtonsoft entry | il2cpp BCL types crossing a game API boundary | not a container at all; no correspondence to naturalize through |
 | `where T : Il2CppObjectBase`, `Il2CppType.Of<T>()`, `Il2CppSugar.ToManaged`, `Il2CppStringToManaged` | the interop/inutil API itself | **not a gap** — naming the proxy base class is what these mean |
 
 Three things worth taking from this:
 
-- **The read-only refusal is not contained.** `IReadOnlyList<T>` being a by-design refusal is defensible on its
-  own; what the consumer shows is that a refused type poisons every container that holds it, so one refusal became
-  ~7 il2cpp spellings across two files, including the signatures of two of their own helpers. Worth deciding
-  whether the refusal should still apply when the member is a *write target reached through a container*.
+- **The read-only refusal was not contained** — and that is what got it fixed (G12). `IReadOnlyList<T>` being a
+  by-design refusal was defensible on its own; what the consumer showed is that a refused type poisons every
+  container that holds it, so one refusal became ~7 il2cpp spellings across two files, including the signatures of
+  two of their own helpers.
 - **G2 has a consumer-side escape that costs nothing.** Both G2 sites were DTOs the game only ever deserializes,
   so the consumer now builds them with `Json.To<T>("{…\"elements\":[]}")` and never names the wrapper. That is a
   real answer for the "array over an open generic param" shape — but only where a wire form exists, and it trades

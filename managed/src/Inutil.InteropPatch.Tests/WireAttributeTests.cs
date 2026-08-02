@@ -60,8 +60,9 @@ static class WireAttributeTests
             WireMap? map = WireMap.Load(wirePath);
             Check("wiremap parses to 1 recovered type", map is { TypeCount: 1 });
 
-            int stamped = new WireAttributeRewriter().Stamp(module, map!);
-            Check("stamped 3 (2 member wire names + 1 type kind)", stamped == 3);
+            WireStampResult stamped = new WireAttributeRewriter().Stamp(module, map!);
+            Check("stamped 3 (2 member wire names + 1 type kind)", stamped.Stamped == 3);
+            Check("nothing was already present on a fresh module", stamped.AlreadyPresent == 0);
 
             static string? Wire(TypeDefinition t, string prop) =>
                 t.Properties.First(p => p.Name == prop).CustomAttributes
@@ -78,8 +79,12 @@ static class WireAttributeTests
             Check("EFT.MongoID (typeKinds=string) carries [WireKind(\"string\")]", Kind(mongo) == "string");
             Check("EFT.ProfileDescriptor (a DTO, no kind) is NOT kind-stamped", Kind(dto) is null);
 
-            int again = new WireAttributeRewriter().Stamp(module, map!);
-            Check("idempotent: re-running the pass stamps 0", again == 0);
+            WireStampResult again = new WireAttributeRewriter().Stamp(module, map!);
+            Check("idempotent: re-running the pass stamps 0", again.Stamped == 0);
+            // The distinction a caller needs: stamping 0 on a re-run is NOT the same as the names never landing.
+            // validate.sh reds on stamped==0 AND already==0; without this second number it red a healthy re-run.
+            Check("…and reports the 3 it found already present (an idempotent no-op is not a failure)", again.AlreadyPresent == 3);
+            Check("Total is what the proxies actually carry, either way", again.Total == 3 && stamped.Total == 3);
 
             outPath = Path.Combine(Path.GetTempPath(), "inutil-wireattr-" + Guid.NewGuid().ToString("N") + ".dll");
             module.Write(outPath);

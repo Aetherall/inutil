@@ -182,7 +182,7 @@ public static class InteropPatcher
     // AFTER it by the CLI; NOT part of the preloader-shared PatchModule, since the boot path never needs wire
     // attributes. Reuses the same atomic temp-write+rename and lock-free resolver. Degrades to a no-op when the
     // wiremap is absent/malformed.
-    public static int StampWireAttributesDirectory(string interopDir, string wireMapPath, TextWriter? log = null)
+    public static WireStampResult StampWireAttributesDirectory(string interopDir, string wireMapPath, TextWriter? log = null)
     {
         if (!Directory.Exists(interopDir))
             throw new DirectoryNotFoundException($"interop dir not found: {interopDir}");
@@ -191,13 +191,13 @@ public static class InteropPatcher
         if (map is null)
         {
             log?.WriteLine($">> wire-attrs: no usable wiremap at {wireMapPath} — skipped (proxies keep member-name serialization)");
-            return 0;
+            return default;   // nothing stamped, nothing already there — the caller's own "no wiremap" line covers why
         }
         log?.WriteLine($">> wire-attrs: {map.TypeCount} recovered type(s) from {Path.GetFileName(wireMapPath)}");
 
         using var resolver = new InMemoryInteropResolver(interopDir);
         var rewriter = new WireAttributeRewriter();
-        int total = 0, dlls = 0;
+        int total = 0, dlls = 0, already = 0;
 
         foreach (string path in Directory.EnumerateFiles(interopDir, "*.dll").OrderBy(p => p, StringComparer.Ordinal))
         {
@@ -214,13 +214,14 @@ public static class InteropPatcher
 
             try
             {
-                int stamped = rewriter.Stamp(module, map);
-                if (stamped > 0)
+                WireStampResult r = rewriter.Stamp(module, map);
+                already += r.AlreadyPresent;
+                if (r.Stamped > 0)
                 {
                     AtomicWrite(module, path);
-                    total += stamped;
+                    total += r.Stamped;
                     dlls++;
-                    log?.WriteLine($">> {Path.GetFileName(path)}: stamped {stamped} wire attr(s)");
+                    log?.WriteLine($">> {Path.GetFileName(path)}: stamped {r.Stamped} wire attr(s)");
                 }
             }
             finally
@@ -229,8 +230,10 @@ public static class InteropPatcher
             }
         }
 
-        log?.WriteLine($">> wire-attrs: stamped {total} member(s) across {dlls} DLL(s)");
-        return total;
+        // BOTH numbers, always: a re-run over an already-stamped tree stamps 0, and a caller that reads only the
+        // first number cannot tell that from "the recovered names never landed". The second is the standing fact.
+        log?.WriteLine($">> wire-attrs: stamped {total} member(s) across {dlls} DLL(s); {already} already present");
+        return new WireStampResult(total, already);
     }
 
     // Write to a temp file in the SAME directory (so the rename stays on one filesystem and is atomic), then

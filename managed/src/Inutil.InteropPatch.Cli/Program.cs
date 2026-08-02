@@ -70,6 +70,8 @@ if (r.Defers.Count > gameDefers.Count)
 string wireMapPath = Environment.GetEnvironmentVariable("INUTIL_WIREMAP")
                      ?? Path.Combine(interopDir, "inutil.wiremap.json");
 Console.WriteLine($"\n>> re-attaching wire names ({Path.GetFileName(wireMapPath)})");
-int stampedTotal = InteropPatcher.StampWireAttributesDirectory(interopDir, wireMapPath, Console.Out);
-Console.WriteLine($"== stamped {stampedTotal} wire attribute(s) ==");
+WireStampResult wire = InteropPatcher.StampWireAttributesDirectory(interopDir, wireMapPath, Console.Out);
+// The summary line a caller greps carries BOTH numbers: stamping 0 onto an already-stamped tree is the idempotent
+// no-op, not a failure, and only the second number separates it from "the recovered names never reached the proxies".
+Console.WriteLine($"== stamped {wire.Stamped} wire attribute(s); {wire.AlreadyPresent} already present ==");
 return 0;

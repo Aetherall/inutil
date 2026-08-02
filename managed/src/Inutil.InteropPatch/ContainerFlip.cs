@@ -76,7 +76,7 @@ public static class ContainerFlip
         {
             TypeCorrespondence? corr = _families.Classify(CecilTypeRef.Of(t));
             if (corr is not { IsFlippableContainer: true })
-                return null;   // a non-flippable generic (Nullable, Task, an IReadOnlyList read spelling) -> defer whole
+                return null;   // a non-flippable generic (Nullable, Task, an IEnumerable read spelling) -> defer whole
             var natArgs = new TypeReference[g.GenericArguments.Count];
             for (int i = 0; i < natArgs.Length; i++)
             {
@@ -91,6 +91,43 @@ public static class ContainerFlip
         // its identity preserved: Player stays Il2CppToyGame.Player). ImportReference into this module's scope.
         return module.ImportReference(t);
     }
+
+    // The il2cpp type a DEMATERIALIZED value of `il2cppDeclared` actually arrives as — the static type a write splice
+    // must give its local + castclass, which is NOT always the declared type.
+    //
+    // For every write-target family it IS the declared type (identity). It differs for a READ-ONLY SPELLING: a member
+    // declared Il2CppSystem…IReadOnlyList`1<T'> receives, from the runtime's DematerializeList, the concrete
+    // Il2CppSystem…List`1<T'> the kind's write target names — and those two proxies are UNRELATED managed classes
+    // (Il2CppInterop renders the interface as its own Il2CppObjectBase subclass, which List`1 does not implement), so
+    // `castclass IReadOnlyList`1` on the dematerialized value throws. The concrete spelling is the correct and cheapest
+    // answer rather than a pointer re-wrap (Cast<T>) because everything downstream of the splice is pointer-level:
+    // a generated setter does Il2CppObjectBaseToPtr -> il2cpp_gc_wbarrier_set_field, and a generated call does
+    // Il2CppObjectBaseToPtr -> stind into the args buffer. Verified against the real proxies, not assumed.
+    //
+    // Null when the declared type is not a classified generic container (a leaf, an array wrapper, a Nullable) — the
+    // caller keeps the declared type.
+    public static TypeReference? Il2CppWriteSpelling(ModuleDefinition module, TypeReference il2cppDeclared)
+    {
+        if (il2cppDeclared is not GenericInstanceType g) return null;
+
+        TypeCorrespondence? corr = _families.Classify(CecilTypeRef.Of(il2cppDeclared));
+        if (corr is not { IsFlippableContainer: true } || corr.WriteTarget) return null;   // identity for a write target
+
+        // The kind's ONE write-target row (ByConvKind's contract), closed over the SAME il2cpp arguments — the
+        // declared spelling's element types are already il2cpp-side, so nothing is naturalized here.
+        TypeCorrespondence? target = _families.ByConvKind(corr.Kind, g.GenericArguments.Count);
+        if (target is null) return null;   // a kind with no write target is not flippable — IsFlippableContainer's invariant
+
+        var open = new TypeReference(Namespace(target.Il2CppFullName), Name(target.Il2CppFullName),
+                                     module, il2cppDeclared.Scope);
+        for (int i = 0; i < g.GenericArguments.Count; i++) open.GenericParameters.Add(new GenericParameter(open));
+        var inst = new GenericInstanceType(module.ImportReference(open));
+        foreach (TypeReference a in g.GenericArguments) inst.GenericArguments.Add(module.ImportReference(a));
+        return inst;
+    }
+
+    static string Namespace(string full) => full[..full.LastIndexOf('.')];
+    static string Name(string full) => full[(full.LastIndexOf('.') + 1)..];
 
     // Is `t` an Il2CppInterop array wrapper, and if so its ELEMENT type (via out-param)?
     static bool TryArrayElement(ModuleDefinition module, TypeReference t, out TypeReference? elem)

@@ -112,8 +112,13 @@ if grep -q 'no usable wiremap' "$PATCH_LOG"; then
   echo "!! the patch found no wiremap — the extract must run BEFORE the patch (see 1c), or it failed silently" >&2
   rm -f "$PATCH_LOG"; exit 1
 fi
-if grep -qE '^== stamped 0 wire attribute\(s\) ==' "$PATCH_LOG"; then
-  echo "!! the patch stamped 0 wire attributes despite a wiremap — recovered names did not reach the proxies" >&2
+# Assert the FACT (the recovered names ARE on the proxies), not the EVENT (this run added some). The patch is
+# idempotent, so a second validate over an already-stamped tree legitimately stamps 0 — reading that as failure
+# reds a healthy re-run, which is what this check used to do (and did, on the first re-run after it landed).
+# `already present` is the standing fact; failing needs BOTH numbers to be zero.
+if grep -qE '^== stamped 0 wire attribute\(s\); 0 already present ==' "$PATCH_LOG"; then
+  echo "!! the patch stamped 0 wire attributes despite a wiremap, and none were already present —" >&2
+  echo "   recovered names did not reach the proxies (check the extract in 1c ran and matched real members)" >&2
   rm -f "$PATCH_LOG"; exit 1
 fi
 rm -f "$PATCH_LOG"

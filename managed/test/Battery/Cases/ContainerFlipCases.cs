@@ -567,6 +567,84 @@ public static class ContainerFlipCases
             return $"CountTags(natural HashSet<int> [{tags.Count}]) -> {ret}: ToIl2Cpp dematerialized the Set correctly";
         });
 
+        // READ-ONLY SPELLING as a WRITE target — Game::SumGroups(IReadOnlyList<Player[]>). The refusal this lifts was
+        // structural, not incidental: IReadOnlyList`1 was registered writeTarget:false, and IsFlippableContainer used
+        // to READ that flag, so the one fact ("List`1 is what a List-kind value materializes into") also decided
+        // "no member wearing IReadOnlyList may be rewritten". Those are different questions — writing THROUGH a
+        // kind's write target is not the same as BEING it — and the consumer paid for the conflation: a game type
+        // holding a Dictionary<K, IReadOnlyList<V>> could not flip EITHER level, so one refusal spread across a
+        // whole call graph.
+        //
+        // What makes this case decisive rather than cosmetic: the dematerialized value arrives as the CONCRETE
+        // il2cpp List`1, and Il2CppInterop renders IReadOnlyList`1 as its own Il2CppObjectBase subclass that List`1
+        // does NOT implement — so a splice that castclass'd the DECLARED type would throw here, in-game, while
+        // compiling and patching perfectly. Only running it proves the write spelling is right.
+        suite.Add("container.readonlylist-param.flip.deployed", () =>
+        {
+            MethodInfo sg = FindProxyMethod("Game", "SumGroups", out string typeName);
+            ParameterInfo p = sg.GetParameters()[0];
+            string pt = p.ParameterType.FullName ?? p.ParameterType.Name;
+            Check.True(pt.StartsWith("System.Collections.Generic.IReadOnlyList", StringComparison.Ordinal),
+                $"{typeName}::SumGroups param is '{pt}' — the container-param pass did not flip the read-only spelling");
+            // FULLY natural: the element is a BCL Player[], not a leaked Il2CppReferenceArray<Player>.
+            Check.True(!pt.Contains("Il2CppReferenceArray", StringComparison.Ordinal),
+                $"{typeName}::SumGroups param is '{pt}' — the outer spelling flipped but the array element leaked");
+            return $"{typeName}::SumGroups takes natural {pt}";
+        });
+
+        suite.Add("container.readonlylist-param.flip.runs", () =>
+        {
+            MethodInfo sg = FindProxyMethod("Game", "SumGroups", out string typeName);
+            Type playerT = FindProxyType("Player", out _);
+            object game;
+            Array[] groups;
+            try
+            {
+                game = Construct(sg.DeclaringType!);
+                // Two groups of distinct name lengths, so the expected sum cannot be hit by a truncated or
+                // duplicated read: [["aa"], ["bbb","c"]] -> 2 + 3 + 1 = 6.
+                groups = new[] { PlayerArray(playerT, "aa"), PlayerArray(playerT, "bbb", "c") };
+            }
+            catch (Exception ex) { Check.Skip($"il2cpp proxy construction of {typeName}/Player not reachable: {ex.GetType().Name}: {ex.Message}"); return null; }
+
+            // A List<Player[]> IS an IReadOnlyList<Player[]> — the natural spelling a mod would hand the flipped
+            // param. The splice dematerializes it into the concrete il2cpp List`1 and passes THAT pointer on.
+            Type listT = typeof(List<>).MakeGenericType(playerT.MakeArrayType());
+            object list = Activator.CreateInstance(listT)!;
+            MethodInfo add = listT.GetMethod("Add")!;
+            foreach (Array g in groups) add.Invoke(list, new object[] { g });
+
+            object? ret;
+            try { ret = sg.Invoke(game, new[] { list }); }
+            catch (TargetInvocationException tie)
+            {
+                Check.True(false, $"invoking the flipped SumGroups threw {tie.InnerException?.GetType().Name}: " +
+                                  $"{tie.InnerException?.Message} — the write spelling is wrong (a castclass to the " +
+                                  "declared IReadOnlyList proxy cannot accept the dematerialized List`1) or " +
+                                  "ToIl2CppTyped did not resolve the read-only sequence");
+                return null;
+            }
+            Check.True(ret is int n && n == 6,
+                $"SumGroups([[aa],[bbb,c]]) returned {ret}, expected 6 — the read-only sequence dematerialized into a " +
+                "wrong-shaped il2cpp list (lost groups, lost elements, or garbled the nested arrays)");
+            return $"SumGroups(natural IReadOnlyList<Player[]> [[aa],[bbb,c]]) -> {ret}: the read-only spelling wrote through to the concrete il2cpp List";
+        });
+
+        // THE LINE, pinned from the other side: IEnumerable<T> stays refused, and for a REASON — ConvKind.Enumerable
+        // has no write-target row at all, so there is nothing to dematerialize into. Without this case, a later
+        // "make the sequences symmetric" change would silently flip a param that cannot be written back, and the
+        // failure would surface as an in-game marshal error rather than here. Game::SumSquads(IEnumerable<Player[]>)
+        // is the same shape as SumGroups in every respect EXCEPT the spelling, so it isolates exactly that variable.
+        suite.Add("container.enumerable-param.refusal", () =>
+        {
+            MethodInfo ss = FindProxyMethod("Game", "SumSquads", out string typeName);
+            string pt = ss.GetParameters()[0].ParameterType.FullName ?? "";
+            Check.True(pt.StartsWith("Il2CppSystem.Collections.Generic.IEnumerable", StringComparison.Ordinal),
+                $"{typeName}::SumSquads param is '{pt}' — IEnumerable flipped, but ConvKind.Enumerable has no write " +
+                "target, so a value written through it has nowhere to dematerialize into");
+            return $"{typeName}::SumSquads keeps {pt} — the refusal that is still load-bearing";
+        });
+
         // delegate PARAM (BclToIl2Cpp) — the docs/reference/limits.md, CORE-1 capability restored: Game::ForEachScore(Action<int>) flips
         // from the wrapper Il2CppSystem.Action<int> to the natural System.Action<int>, so a BARE LAMBDA binds. The proxy
         // body splices the wrapper's OWN op_Implicit at entry (wraps the managed delegate as the il2cpp Action) and the
@@ -723,6 +801,19 @@ public static class ContainerFlipCases
            ?? throw new AssertException($"{proxyType.FullName}::{name} property not found on the proxy — the fixture member is missing or renamed");
 
     // ToyGame.Player has no parameterless ctor (Player(string name)), so Construct's path does not serve it.
+    // A typed il2cpp Player[] (the proxy array the flipped IReadOnlyList<Player[]> element is), one entry per name.
+    // Names carry the oracle: SumGroups sums Name.Length, so distinct lengths make a wrong-shaped marshal visible
+    // as a wrong number rather than a coincidentally-right one.
+    static Array PlayerArray(Type playerT, params string[] names)
+    {
+        ConstructorInfo ctor = playerT.GetConstructors()
+            .FirstOrDefault(c => c.GetParameters() is { Length: 1 } ps && ps[0].ParameterType == typeof(string))
+            ?? throw new MissingMethodException($"{playerT.FullName} has no (string) ctor");
+        Array arr = Array.CreateInstance(playerT, names.Length);
+        for (int i = 0; i < names.Length; i++) arr.SetValue(ctor.Invoke(new object?[] { names[i] }), i);
+        return arr;
+    }
+
     static object ConstructPlayer(Type proxyType)
     {
         ConstructorInfo? ctor = proxyType.GetConstructors()

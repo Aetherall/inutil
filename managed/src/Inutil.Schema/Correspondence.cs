@@ -47,21 +47,36 @@ public sealed class TypeCorrespondence
 
     // Is THIS row the canonical il2cpp type a value of `Kind` materializes INTO (the write direction)? True for
     // List`1 / Dictionary`2 / Nullable`1 / ValueTuple`N / Task[`1]; FALSE for a read-only SPELLING (IReadOnlyList`1 /
-    // IEnumerable`1 read as a sequence yet write to the concrete List`1). ByConvKind returns the write-target row.
+    // IEnumerable`1 read as a sequence yet write to the concrete List`1). ByConvKind returns the write-target row,
+    // and depends on there being exactly ONE per kind — so this stays false for a spelling even when that spelling
+    // is flippable (see IsFlippableContainer: writing THROUGH a kind's write target is not the same as BEING it).
     public bool WriteTarget { get; }
 
     public IBridge Bridge { get; }
     public BridgeShape Shape => Bridge.Shape;
     public Directionality Direction => Bridge.Direction;
 
-    // The ONE definition of "which families the container flip owns" — a WRITE-TARGET concrete container
-    // (List / Dictionary / ValueTuple / HashSet) whose il2cpp return/param the IL-rewrite seam rewrites to its
-    // natural BCL spelling. Both the return family (ContainerFamily) and the type-mapper (ContainerFlip) key on
-    // THIS, so the flip roster can never drift between the seam's spots (the HashSet add once left ContainerFlip.
-    // Naturalize a Set behind the other three — exactly this drift). Excludes read-only spellings (IReadOnlyList/
-    // IEnumerable), Nullable/Task (their own passes), and Leaf/Object/Array.
+    // The ONE definition of "which families the container flip owns" — a container KIND whose il2cpp return/param
+    // the IL-rewrite seam rewrites to its natural BCL spelling. Both the return family (ContainerFamily) and the
+    // type-mapper (ContainerFlip) key on THIS, so the flip roster can never drift between the seam's spots (the
+    // HashSet add once left ContainerFlip.Naturalize a Set behind the other three — exactly this drift).
+    //
+    // Keyed on KIND, deliberately NOT on WriteTarget. The two are different questions and conflating them cost the
+    // read-only spellings their flip: WriteTarget answers "is THIS row the type a value of Kind materializes INTO"
+    // (exactly one row per kind — ByConvKind's contract), while flippability asks "can a member wearing this
+    // spelling be rewritten to its natural form", which needs only that the kind HAS a write target — not that this
+    // row IS it. IReadOnlyList`1 is the case that proves the distinction: it can be read (materialize into a
+    // List<T>) AND written (dematerialize into the concrete il2cpp List`1, whose pointer is what a proxy setter or
+    // native call actually consumes), so a member wearing it flips to a natural IReadOnlyList<T> while List`1
+    // remains the one write target. The invariant that keeps this honest — every flippable row's kind resolves to a
+    // write target — is asserted over the real registry in Inutil.Schema.Tests (FamiliesTests), where a future
+    // family that forgets it fails loud.
+    //
+    // Excludes ConvKind.Enumerable (IEnumerable`1 has NO write-target row at all — nothing to dematerialize into,
+    // so it stays a read-only spelling), MutableList (a hook-boundary spelling, never a proxy rewrite), Nullable /
+    // Task (their own passes), and Leaf/Object/Array.
     public bool IsFlippableContainer =>
-        WriteTarget && Kind is ConvKind.List or ConvKind.Dictionary or ConvKind.Tuple or ConvKind.Set;
+        Kind is ConvKind.List or ConvKind.Dictionary or ConvKind.Tuple or ConvKind.Set;
 
     public TypeCorrespondence(string il2cppFullName, Type bclOpenType, ConvKind kind, IBridge bridge, bool writeTarget = true)
     {
