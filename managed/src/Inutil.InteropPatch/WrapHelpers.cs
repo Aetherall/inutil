@@ -265,13 +265,15 @@ public sealed class WrapHelpers
         return gim;
     }
 
-    // System.Nullable`1<x>. The open type is ImportReference'd from its DEFINING assembly (System.Private.CoreLib) —
-    // the same proven scope ContainerFlip uses for the container families (module.TypeSystem.CoreLibrary is the
-    // System.Runtime facade, which does not always carry a forwarded type). `x` used RAW when it is the method's own
-    // generic parameter (already valid in scope), imported when it is a concrete value type.
+    // System.Nullable`1<x>. The open type is named in its DEFINING assembly (System.Private.CoreLib) — the same proven
+    // scope ContainerFlip uses for the container families (module.TypeSystem.CoreLibrary is the System.Runtime facade,
+    // which does not always carry a forwarded type) — and built against the MODULE's own corlib reference rather than
+    // imported from the tool host's (see BclScope: importing stamps the tool's net9 identity and CS1705s every
+    // consumer of the patched tree). `x` used RAW when it is the method's own generic parameter (already valid in
+    // scope), imported when it is a concrete value type.
     public GenericInstanceType SysNullableOf(TypeReference x)
     {
-        var inst = new GenericInstanceType(_module.ImportReference(typeof(System.Nullable<>)));
+        var inst = new GenericInstanceType(BclScope.OpenGeneric(_module, typeof(System.Nullable<>)));
         inst.GenericArguments.Add(x.IsGenericParameter ? x : _module.ImportReference(x));
         return inst;
     }

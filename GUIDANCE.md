@@ -101,7 +101,18 @@ Confirm the spelling per type before relying on it — the `<X>k__BackingField` 
 a convention, not a guarantee. Full treatment, including why this is *safer to author* rather than more *legitimate*:
 [guide 4 → "Getter-only property? Look for its backing field first"](./docs/guide/04-escape-hatches.md).
 
-## 4. Natural dictionaries: assign, don't mutate
+## 4. Natural dictionaries: assign, don't mutate — **except when the VALUE is ref-bearing**
+
+> **Runtime result, added after this section was acted on: for `ProfileDescriptor.Customization` the advice below
+> is wrong, and the caveat at the end of the section is the part that held.** The natural assignment compiles and
+> throws in a booted game — `ArgumentException: Object contains non-primitive or non-blittable data (Parameter
+> 'value')` — on the SETTER, reproducible on a bare `new EFT.ProfileDescriptor()` with a single-entry dictionary
+> (probed over the slot's `/eval`). A ref-bearing dictionary VALUE (`MongoID`) is not marshalled on a direct proxy
+> property call; inutil's marshaller runs at hook seams. The consumer's by-name write stays, and this is now
+> [GAPS.md](./GAPS.md) G11 — the case where the compiler is a FALSE oracle, not merely a limited one. The
+> "assign, don't mutate" *shape* below is still right for a container that does marshal; what cannot be inferred
+> is which ones do.
+
 
 `profile/Profile.Fixtures.cs:283-297` reaches the `Customization` field by name and writes entries through
 `ValueTypeBridge.InvokeUnboxed(dict, "set_Item", …)`. `EFT.ProfileDescriptor.Customization` is a natural

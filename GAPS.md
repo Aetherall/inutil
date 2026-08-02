@@ -8,9 +8,15 @@ distinction earned its place here: two entries in the first draft of this file w
 plausible-looking signature dump or summary line was trusted over the compiler. See "How the wrong answers happened"
 at the end — the failure modes are reusable.
 
-**Status:** G3 and G4 are closed and proven (G4 in-game under both loaders). G2 was mis-stated and is restated
-below as a design question needing a decision before any code. Remaining: G5's wiremap onboarding gap for
-CONSUMERS (G9 fixed inutil's own harness ordering, not a consumer's pipeline), then the ergonomic items (G6-G8).
+**Status:** G3, G4 and G10 are closed and proven (G4 in-game under both loaders). G2 was mis-stated and is restated
+below as a design question needing a decision before any code. Remaining: **G11** (a container that compiles and
+throws — the one that makes the compiler a false oracle), G5's wiremap onboarding gap for CONSUMERS (G9 fixed
+inutil's own harness ordering, not a consumer's pipeline), then the ergonomic items (G6-G8).
+
+**G10 and G11 were found by ACTING on [GUIDANCE.md](./GUIDANCE.md), not by reading more code** — G10 by running §0
+(re-patch) on the consumer's real overlay, G11 by taking §4's advice and then probing it in a booted game. Both were
+invisible to the pass that produced this file, and for the same reason each time: a step nobody had executed
+end-to-end.
 
 ---
 
@@ -267,6 +273,84 @@ GREEN — 97 passed          (bepinex-validate, and melon-validate, first run)
 
 ---
 
+## G10 — the patcher stamped the TOOL HOST's BCL identity into every module it wrote — **CLOSED**
+
+**Severity: high.** It made a freshly patched tree uncompilable-against for every offline consumer — the exact
+operation GUIDANCE.md §0 tells a consumer to perform first.
+
+**How found:** running §0 for real on the consumer's overlay. After `inutil-interoppatch`, `mod-check` over
+`offline/src` went from a working tree to **5013 errors**, nearly all the same one:
+
+```
+CS1705 Assembly 'Assembly-CSharp' … uses 'System.Private.CoreLib, Version=9.0.0.0' which has a higher version
+       than referenced assembly 'System.Private.CoreLib, Version=6.0.0.0'
+```
+
+The patcher already knew about this class of skew — `NormalizeCoreLibRef` (`PatchDirectory.cs`) exists to align
+every `System.Private.CoreLib` reference to the module's own `System.Runtime` version, and it *ran* (it logged
+`normalized …` for four DLLs). It just could not win, because it ran too early:
+
+1. `PatchModule` rewrites, then normalizes — at this point the module is consistent.
+2. `ResidualAudit.Scan` runs next, and it *plans* members (`ParamFamily.PlanMember` → `WrapHelpers`) to ask each
+   family whether a member was naturalizable. Planning builds natural types, and `SysNullableOf` /
+   `ContainerFlip.BclGeneric` built theirs with `module.ImportReference(typeof(System.Nullable<>))` — which
+   resolves the open type from **the tool's own runtime** and adds a fresh `System.Private.CoreLib 9.0.0.0`
+   row to `module.AssemblyReferences`.
+3. `AtomicWrite` then persisted that row. Nothing was scoped to it — Roslyn rejects the assembly on the row's
+   mere presence.
+
+Every run re-added one (the consumer's `Assembly-CSharp` had accumulated ~26 duplicate corlib rows), and every run
+re-reported `normalized`, so the log looked like the fix was working while the output never converged.
+
+**Fixed at the source, plus a structural guard.** `BclScope` (new) is the single place a BCL open type is named:
+it *builds* the reference — same namespace/name/arity, `IsValueType` carried over — scoped to the module's own
+`System.Private.CoreLib` row, instead of importing the tool's. Both former import sites route through it.
+Separately, `NormalizeCoreLibRef` now also runs inside `AtomicWrite`, immediately before `module.Write`, so a
+future pass that re-introduces the skew after `PatchModule` cannot reach disk with it — the invariant is enforced
+where the bytes leave, not where the last known offender ran.
+
+Verified by patching a copy of the consumer's interop and reading the emitted refs: before, exactly one
+`System.Private.CoreLib 9.0.0.0` row survived every run; after, none, and `mod-check` over the same 125-file
+consumer went from 5013 errors to clean.
+
+---
+
+## G11 — a naturalized dictionary of a REF-BEARING value type compiles but throws on assignment
+
+**Severity: high**, and worse than a plain gap: the compiler now says yes to something the runtime refuses, so
+the oracle GUIDANCE.md relies on ("probe it with `inutil-check`") returns a false green for this shape.
+
+`EFT.ProfileDescriptor.Customization` presents as a natural `Dictionary<EBodyModelPart, MongoID>` — it type-checks,
+and a 125-file consumer compiles clean around it. Assigning it in a **booted game** throws:
+
+```csharp
+var pd = new EFT.ProfileDescriptor();
+var d  = new Dictionary<EFT.EBodyModelPart, EFT.MongoID>();
+d[EFT.EBodyModelPart.Head] = new EFT.MongoID("5cc085d214c02e000c6bea67");
+pd.Customization = d;
+// ArgumentException: Object contains non-primitive or non-blittable data. (Parameter 'value')
+```
+
+**How found:** taking GUIDANCE.md §4's advice (assign a complete dictionary through the setter), then — because §4
+itself flags that compiling is not evidence for this one — probing it live over the slot's `/eval` endpoint. The
+throw reproduces on a bare descriptor with a single entry, so it is the property path itself, not anything about
+the consumer's data.
+
+The value type is the whole story: `MongoID` is ref-bearing, so the marshaller's blittable-copy path rejects the
+dictionary. inutil's own marshaller runs at **hook seams**, not on a direct proxy property call, so nothing
+re-flips this one at the point of assignment. Note the asymmetry with G-`ParentId`: a ref-bearing *`Nullable`* was
+made to work end-to-end; a ref-bearing dictionary *value* was not, and there is currently no signal that says so
+short of running it.
+
+Two things worth deciding: whether the container flip should refuse to naturalize a member it cannot marshal (so
+the compiler goes back to being the oracle), and — either way — whether `surface-query` should mark such a member,
+since today nothing distinguishes it from a container that genuinely round-trips.
+
+The consumer keeps the by-name write (`Fields.GetObject` + `ValueTypeBridge.InvokeUnboxed("set_Item", …)`), now
+with the re-probe recorded in the comment so the next reader does not re-derive it.
+
+---
+
 ## Not a gap: ref-bearing `Nullable` (the `ParentId` case)
 
 Recorded because the first draft of this file listed it as an open high-severity defect, with a mechanism worked out
@@ -304,4 +388,8 @@ happened. Only something that consumes the output for real — here, the C# comp
   patched copy): G2, G3, and the retracted `ParentId` entry.
 - **Tool-output-verified** (single clean patch run over a copy of the consumer's interop): G4, G5.
 - **Read from source**: G6, G7, G8, and the `Naming.cs` / `ContainerFlip.cs` / `ResidualAudit.cs` mechanisms cited.
-- **Not runtime-verified — nothing here was checked in a booted game.**
+- **Runtime-verified in a booted game** (the consumer's live EFT slot, via its `/eval` endpoint): **G11** — the
+  throwing setter, isolated on a bare descriptor. **G10**'s fix is compile-verified (5013 errors → clean over the
+  consumer's 125 files) and the patched tree boots: menu reached, the consumer's mod compiled and wired 109 hooks.
+- Everything else here remains unchecked in a booted game. G11 is the reason that line used to matter more than it
+  looked: the two oracles disagree, and only one of them was being consulted.

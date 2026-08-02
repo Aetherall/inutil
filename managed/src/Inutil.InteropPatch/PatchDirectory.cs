@@ -240,6 +240,14 @@ public static class InteropPatcher
         string tmp = targetPath + ".inutil-tmp";
         try
         {
+            // The BCL-identity invariant, enforced at the LAST possible moment: no module leaves this patcher carrying
+            // a System.Private.CoreLib reference at a version other than its own System.Runtime's. Normalizing once in
+            // PatchModule is not enough — anything that touches the module afterwards can re-introduce the skew, and
+            // one did: ResidualAudit.Scan plans members (building natural types) between PatchModule and this write,
+            // which used to ImportReference the tool host's net9 corlib and leave a dangling 9.0.0.0 row behind. Roslyn
+            // rejects the assembly on that row alone (CS1705), so every offline consumer check of the patched tree
+            // dies. BclScope removed the source; this makes a re-introduction structurally unable to reach disk.
+            NormalizeCoreLibRef(module);
             module.Write(tmp);
             File.Move(tmp, targetPath, overwrite: true);
         }

@@ -111,15 +111,15 @@ public static class ContainerFlip
         return false;
     }
 
-    // A closed BCL generic type ref (bclOpenType<args...>) over the (already-naturalized) elements. ImportReference
-    // resolves the open type from the tool's OWN runtime, so its scope is the assembly that actually DEFINES it
-    // (System.Private.CoreLib) — NOT module.TypeSystem.CoreLibrary. That distinction is load-critical and NOT the
-    // same as Task`1: Task`1 IS in the CoreLibrary facade (System.Runtime), so WrapHelpers can name it there;
-    // List`1 / Dictionary`2 / ValueTuple`N are forwarded from a different facade, so naming them in System.Runtime
-    // fails to load (TypeLoadException, caught in-game).
+    // A closed BCL generic type ref (bclOpenType<args...>) over the (already-naturalized) elements. The open type is
+    // scoped to the assembly that actually DEFINES it (System.Private.CoreLib) — NOT module.TypeSystem.CoreLibrary.
+    // That distinction is load-critical and NOT the same as Task`1: Task`1 IS in the CoreLibrary facade
+    // (System.Runtime), so WrapHelpers can name it there; List`1 / Dictionary`2 / ValueTuple`N are forwarded from a
+    // different facade, so naming them in System.Runtime fails to load (TypeLoadException, caught in-game).
+    // BclScope.OpenGeneric builds it against the MODULE's corlib rather than importing the tool host's (see BclScope).
     static GenericInstanceType BclGeneric(ModuleDefinition module, Type bclOpenType, params TypeReference[] args)
     {
-        var inst = new GenericInstanceType(module.ImportReference(bclOpenType));
+        var inst = new GenericInstanceType(BclScope.OpenGeneric(module, bclOpenType));
         foreach (TypeReference a in args) inst.GenericArguments.Add(module.ImportReference(a));
         return inst;
     }
