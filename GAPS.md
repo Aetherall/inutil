@@ -8,13 +8,13 @@ distinction earned its place here: two entries in the first draft of this file w
 plausible-looking signature dump or summary line was trusted over the compiler. See "How the wrong answers happened"
 at the end — the failure modes are reusable.
 
-**Status:** G3 and G4's reporting defects are fixed. G2 was mis-stated and is restated below as a design question.
-Remaining work, in order: the 34 residual holes (G4), the wiremap onboarding gap (G5), then the ergonomic items
-(G6–G8). G2 needs a decision before any code.
+**Status:** G3 and G4 are closed (G4 offline-only — see its verification note). G2 was mis-stated and is restated
+below as a design question needing a decision before any code. Remaining: in-game proof for G4's generic-method
+rewrite, the wiremap onboarding gap (G5), then the ergonomic items (G6-G8).
 
 ---
 
-## G3 — `surface-query --methods` cannot distinguish flipped from unflipped
+## G3 — `surface-query --methods` cannot distinguish flipped from unflipped — **CLOSED**
 
 **Severity: high.** It is the tool authors are told to consult, and it silently erases the one distinction that
 decides whether natural typing works.
@@ -94,46 +94,48 @@ through.
 
 ---
 
-## G4 — residual holes on a real game (reporting fixed; the holes remain)
+## G4 — residual holes on a real game — **CLOSED**
 
-A clean single-pass patch of the EFT interop reports:
+A clean single-pass patch of the EFT interop now reports:
 
 ```
->> residual: 134 member(s) left wearing a naturalizable il2cpp type (100 known-deferred, 34 unexplained)
-== patched 19 DLL(s), 783 member(s) flipped; 124 unchanged, 0 non-.NET ==
+>> residual: 104 member(s) left wearing a naturalizable il2cpp type (104 known-deferred, 0 unexplained)
+== patched 19 DLL(s), 843 member(s) flipped; 124 unchanged, 0 non-.NET ==
 ```
 
-alongside **694 pass-level `defer` lines** (dominated by `array method → virtual slot needs vtable lockstep` and
-`container field → virtual accessor needs vtable lockstep`) and **34 printed `!! HOLE` lines**:
+Was 34 unexplained and 783 flipped. Three reporting defects and one real gap, in that order:
 
-| Count | Printed hole reason |
-|---|---|
-| 23 | nullable param: NO KNOWN DEFERRAL REASON |
-| 8 | container param: NO KNOWN DEFERRAL REASON |
-| 2 | container return: NO KNOWN DEFERRAL REASON |
-| 1 | nullable return: NO KNOWN DEFERRAL REASON |
+**Reporting (fixed).** The first draft of this entry claimed the audit contradicted itself — 68 printed holes
+against a summary of 34. It never did:
 
-**The reporting defects are FIXED** (commit below). The first draft of this entry claimed the audit's headline
-count contradicted its own output — 68 printed holes against 34 reported. It did not; three separate reporting
-bugs made it look that way, and each was worth fixing on its own:
+1. **Printed twice** — once by `PatchDirectory` into the log handed to it, once again by the CLI from the returned
+   result. 34 holes, 68 lines. One emitter now.
+2. **Not identified by signature** — the member string was `Type::Method(paramName)`, so three distinct overloads of
+   `Sirenix … DeserializeValue` rendered identically, indistinguishable from one hole reported three times. Keyed on
+   the full parameter list now.
+3. **Silent on every in-game path** — the report only goes to a `log`, and *both* in-game callers pass `null`, so a
+   boot that left members raw said nothing at all. This is how the consumer's overlay came to carry holes nobody
+   knew about. Both callers now log the count and name `inutil-interoppatch` for the list.
 
-1. **The report was printed twice** — once by `PatchDirectory` into the log handed to it, once again by the CLI
-   from the returned result. 34 holes, 68 lines. Now one emitter, in the library.
-2. **Holes were not identified by signature.** The member string was `Type::Method(paramName)`, so three distinct
-   overloads of `Sirenix … DeserializeValue` rendered as three identical lines — indistinguishable from one hole
-   reported three times, which is exactly how a report gets dismissed as noisy. Now keyed on the full parameter
-   list: **34 lines, 34 distinct**, reconciling with the summary.
-3. **Every in-game path was silent.** `PatchDirectory` only writes the report to a `log`, and *both* in-game
-   callers (`Inutil.BepInEx.Patcher`, `Inutil.BepInEx`) pass `null` — so a boot that left members wearing a raw
-   il2cpp spelling said nothing at all, and the author met them later as an unexplained compile error. This is how
-   the consumer's overlay came to have holes nobody knew about. Both now log the count and point at
-   `inutil-interoppatch` for the names.
+**The real gap (fixed): genericity was gated on the wrong unit.** All three candidacy gates read
+`!m.HasGenericParameters`, excluding a generic *method* outright — where the actual condition belongs to the *type
+being flipped*. `AddEffect<TEffect>(EBodyPart, Nullable<float> delayTime, …, Action<TEffect> initCallback)` has four
+params whose natural type is plainly `float?` and one that genuinely depends on `TEffect`; excluding the method left
+all five raw. Worse, it left them **invisible rather than deferred** — a non-candidate produces no flip, no defer,
+no log line — which is why they surfaced only through the audit. 23 of the 34 were this shape; the last 4 were
+`CollisionWithGeneratedSibling` defers the audit's hand-kept reason list did not know about, now resolved by asking
+`ParamFamily`'s own collision predicate rather than re-deriving one.
 
-**What remains is the holes themselves** — 34 members a pass should have covered and didn't, with a representative
-cluster in every `EFT.HealthSystem.ActiveHealthController::AddEffect` nullable parameter. Untouched.
+**Verification status — offline only.** The gate is green; a mod calling `AddEffect` with `float?` (including
+`null`) compiles against the re-patched tree and is rejected by the old one. But this is the **first time the
+rewriter splices into a generic method's body**, and the ToyGame fixture has no generic-method case, so
+`bepinex-validate` / `melon-validate` do not cover it. Per the project's own bar — a capability is done when it is
+proven on ToyGame under both loaders — this is **not done**: it needs a fixture (a generic method taking a
+`Nullable<float>`) and a dual-loader run.
 
-This also compounds with the still-outstanding coarse `virtual` arm (`ResidualAudit.cs:89-96`), which the file
-already documents as unable to distinguish a legitimate slot-root defer from a real hole.
+**Still open:** the coarse `virtual` arm (`ResidualAudit.cs:110-117`), which cannot distinguish a legitimate
+slot-root defer from a real hole. With unexplained now at zero, the 100 known-deferred — dominated by that arm — are
+what is left to tighten.
 
 ---
 
