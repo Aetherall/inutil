@@ -8,9 +8,9 @@ distinction earned its place here: two entries in the first draft of this file w
 plausible-looking signature dump or summary line was trusted over the compiler. See "How the wrong answers happened"
 at the end — the failure modes are reusable.
 
-**Status:** G3 and G4 are closed (G4 offline-only — see its verification note). G2 was mis-stated and is restated
-below as a design question needing a decision before any code. Remaining: in-game proof for G4's generic-method
-rewrite, the wiremap onboarding gap (G5), then the ergonomic items (G6-G8).
+**Status:** G3 and G4 are closed and proven (G4 in-game under both loaders). G2 was mis-stated and is restated
+below as a design question needing a decision before any code. Remaining: G5's wiremap onboarding gap — which the
+in-game run just made concrete, see G9 — then the ergonomic items (G6-G8).
 
 ---
 
@@ -126,12 +126,20 @@ no log line — which is why they surfaced only through the audit. 23 of the 34 
 `CollisionWithGeneratedSibling` defers the audit's hand-kept reason list did not know about, now resolved by asking
 `ParamFamily`'s own collision predicate rather than re-deriving one.
 
-**Verification status — offline only.** The gate is green; a mod calling `AddEffect` with `float?` (including
-`null`) compiles against the re-patched tree and is rejected by the old one. But this is the **first time the
-rewriter splices into a generic method's body**, and the ToyGame fixture has no generic-method case, so
-`bepinex-validate` / `melon-validate` do not cover it. Per the project's own bar — a capability is done when it is
-proven on ToyGame under both loaders — this is **not done**: it needs a fixture (a generic method taking a
-`Nullable<float>`) and a dual-loader run.
+**Verification status — proven in-game, both loaders.** `Game::Infuse<T>(float?, float?, Action<T>, T) : T` and
+`Game::Ledger<T>(T) : List<int>` reproduce the measured EFT shape member-for-member, with the `Player`
+instantiation rooted in `Bootstrap.Exercise` so IL2CPP keeps a real methodPointer. Both directions are asserted on
+one method — too timid (closed params left raw) and too eager (touching `Action<T>` or the `T` return) are both
+regressions. `bepinex-validate` GREEN 97, `melon-validate` GREEN 97, with the decisive case running in a booted
+IL2CPP game under each:
+
+```
+Infuse<Player>(1f, 2f, null, player) -> game computed LastInfuse=12
+Ledger<Player>                       -> natural List<int> [1,2,7]
+```
+
+so the spliced entry dematerialization and the return tail-swap both execute correctly inside a generic method
+body.
 
 **Still open:** the coarse `virtual` arm (`ResidualAudit.cs:110-117`), which cannot distinguish a legitimate
 slot-root defer from a real hole. With unexplained now at zero, the 100 known-deferred — dominated by that arm — are
@@ -201,6 +209,23 @@ gives no help either.
 
 Already in `docs/reference/limits.md`; recorded here because it is the limit this consumer hit most visibly, which
 is a data point about priority.
+
+---
+
+## G9 — the first `*-validate` run after a reprovision is always RED
+
+Found by running the long loop. `setup-bepinex --force` / `setup-melon --force` regenerate `interop/` from scratch,
+which also removes `inutil.wiremap.json`. `validate.sh` then runs the interop patch **before** the wire-map extract,
+so the patch has no wiremap to stamp (`== stamped 0 wire attribute(s) ==`) and every `wire-shape.*` case fails on a
+type that carries no recovered wire names. The extract runs moments later, so the *second* run is green with no
+change to anything — which is exactly the shape of failure that trains people to re-run and shrug.
+
+Observed identically on both loaders: BepInEx RED 4 (3 wire-shape + one unrelated assertion bug), then GREEN 97;
+Melon RED 3 (all wire-shape), then GREEN 97.
+
+Fix direction: extract the wire map before the patch in `validate.sh`, or have the patch step re-stamp after the
+extract. Either makes a fresh provision green on the first run. Worth doing before anyone treats "re-run it" as
+normal.
 
 ---
 
