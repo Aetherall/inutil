@@ -3,15 +3,22 @@
 *Reference & plan. The remaining work to make inutil ship a **versioned, deployable bundle**, so a consumer
 (the OpenTarkov engine) stops rebuilding inutil from source. This is the concrete form of the "distributable"
 that [`limits.md`](./limits.md) → "Packaging & build" flags as roadmap, and the fix for the coupling described
-below. Verify against the tree; this is a plan, not a built feature.*
+below. Parts of this page are BUILT (the bundle, both CLIs, the game-free mode) and parts are still plan
+(version tie, publish channel) — each section says which. Verify against the tree.*
 
 ## Why — the coupling to remove
 
-Today inutil has **no release artifact**. Its only consumer, the OpenTarkov engine, builds inutil *from source*
-inside its own `pack.sh`: it names inutil's internal project layout (`Inutil.BepInEx.Patcher`, `managed/refstubs`)
-and MSBuild props (`-p:RefStubs`, `-p:InteropProxies=Sdk`, `-p:InutilDll=`, `-p:InutilModsDll=`). That is an
-**inversion**: the consumer knows how to build inutil. So every inutil refactor breaks the consumer — the v2
-rewrite's first commit (`c3bc2bf`) deleted exactly those projects/props, and the engine can't fast-forward its
+> **Status:** largely discharged. `tools/pack.sh` exists and produces the bundle, including a **game-free**
+> mode (`PACK_BEPINEX_DIR` + the committed refstubs) that needs no provisioned game — and per its own docs the
+> OpenTarkov consumer now ships the engine via that bundle rather than by rebuilding inutil's projects. What
+> remains is the schema-marker version tie and a publish channel ("Remaining work" 4–5). The history below is
+> kept because it explains the shape of the contract.
+
+Historically inutil had **no release artifact**. Its only consumer, the OpenTarkov engine, built inutil *from source*
+inside its own `pack.sh`: it named inutil's internal project layout (`Inutil.BepInEx.Patcher`, `managed/refstubs`)
+and MSBuild props (`-p:RefStubs`, `-p:InteropProxies=Sdk`, `-p:InutilDll=`, `-p:InutilModsDll=`). That was an
+**inversion**: the consumer knew how to build inutil. So every inutil refactor broke the consumer — the v2
+rewrite's first commit (`c3bc2bf`) deleted exactly those projects/props, and the engine could not fast-forward its
 submodule past it even though v2 is a strict descendant of the engine's pin.
 
 The fix: **inutil owns producing its own bundle; the consumer consumes the artifact.** After that, inutil can
@@ -36,6 +43,8 @@ byte-identically into each tree; only the ~one thin host DLL differs per loader.
 | `Inutil.MelonLoader.dll` | `Inutil.MelonLoader` | `melonloader/` only | the thin `MelonMod` twin |
 | `inutil-interoppatch` | `Inutil.InteropPatch.Cli` | `tools/` (runnable) | **the offline patcher** — the whole deployment-time interface (see below) |
 | `inutil-metadata-extract` | `Inutil.Metadata.Cli` | `tools/` (runnable, optional) | recovers wire names for `inutil-interoppatch` to re-attach ([architecture 16](../contribution/architecture/16-metadata.md)); carries a Cpp2IL closure |
+| `inutil-check` | `Inutil.Check.Cli` | `tools/` (runnable, optional) | the offline dev-check CLI — compiles a mod through the TARGET tree's own `CsModCompiler` (so an offline check == a hot-reload, structurally), plus Cecil `query`/`methods`/`dump` over its proxies |
+| `Inutil.BepInEx.Patcher.dll` | `Inutil.BepInEx.Patcher` | `bepinex/BepInEx/patchers/` | the preloader patcher — applies the SAME `PatchModule` in memory, so a boot patches before any plugin resolves a game type |
 
 Laid out as (a consumer copies its loader's tree wholesale):
 
@@ -43,43 +52,59 @@ Laid out as (a consumer copies its loader's tree wholesale):
 dist/<version>/
   bepinex/BepInEx/plugins/   the shared engine + Inutil.BepInEx.dll   — copy beside a BepInEx install
   melonloader/Mods/          the shared engine + Inutil.MelonLoader.dll — copy into a MelonLoader install
-  tools/                     inutil-interoppatch, inutil-metadata-extract (runnable)
+  tools/                     inutil-interoppatch, inutil-metadata-extract, inutil-check (runnable)
   manifest.json  MARKER      machine- + human-readable identity + per-loader file→deploy map
 ```
 
 `manifest.json`'s per-loader `files` lists are **derived from what pack.sh actually stages**, never hand-kept, so
 the manifest cannot drift from the bundle.
 
-**Not in the bundle (deliberately):** no BepInEx preloader `patchers/` DLL. v2 patches interop **offline** (next
-section), so there is nothing to inject at boot. Any consumer still copying a patcher into `patchers/` is on the
-old model.
+**The preloader patcher IS in the bundle.** An earlier revision of this page said it was deliberately absent
+because v2 patches offline. That is wrong on the artifact: `tools/pack.sh` stages `Inutil.BepInEx.Patcher.dll`
+into `bepinex/BepInEx/patchers/`, and the host plugin also patches at boot. Both drive the SAME
+`InteropPatcher.PatchModule` — one rewrite implementation, applied either on disk (the CLI, offline) or in
+memory (the preloader, before any plugin resolves a game type). The offline CLI remains the *deployment*
+contract below; the boot-time path is what keeps a freshly-generated or regenerated interop dir correct without
+a manual step.
 
 ## The consumption contract (the anti-coupling guarantee)
 
-A consumer depends on **three stable things**, and nothing about inutil's internal project layout:
+A consumer depends on **four stable things**, and nothing about inutil's internal project layout:
 
 1. **The bundle layout** above — which files, and where they deploy relative to a loader.
 2. **The patch CLI invocation** — `inutil-interoppatch --game <gameDir>` (auto-detects the loader layout) or
    `inutil-interoppatch <interopDir>`. Idempotent; a no-op on an already-patched folder; exit `0` on success,
    `2` on a usage/path error. This is the whole deployment-time interface.
-3. **The mod API** — `Inutil.Hooks`, the `ILoad`/`ITick`/`IGui` lifecycles, `MainThread`, `Hook<Game>`,
-   `Inutil.Sugar`, and the escape-hatch faces (`Safe`/`Invoke`/`Probe`/`Introspect`/`Fields`). Consumer mod
-   code and any ship-as-source SDK compile against these.
+3. **The check CLI invocation** — `inutil-check check <bepDir> <modDir>` (offline type-check of a mod against
+   that tree's own proxies + engine), plus `query`/`methods`/`dump` for proxy discovery. Exit `0` clean, `1`
+   diagnostics, `2` setup. It late-binds the TARGET tree's `Inutil.Mods.dll`, so the offline check and the
+   in-process hot-reload are the same compiler — there is no second implementation to drift.
+4. **The mod API** — `Inutil.Hooks`, the `ILoad`/`ITick`/`IGui` lifecycles, `MainThread`, `Hook<Game>`,
+   `Inutil.Sugar`, the escape-hatch faces (`Safe`/`Invoke`/`Probe`/`Introspect`/`Fields`), and the wire seam
+   (`Inutil.Json`/`Inutil.Wire` — see [guide 5](../guide/05-wire-json.md)). Consumer mod code and any
+   ship-as-source SDK compile against these.
 
-If a change would break any of the three, it is a **contract change** and the consumer must be told — that is the
+If a change would break any of the four, it is a **contract change** and the consumer must be told — that is the
 only coupling that remains.
 
 ## How deployment works now (the model the bundle assumes)
 
-inutil v2 patches interop **offline, once**, not via an in-memory preloader:
+The **offline CLI is the deployment contract** — the step an installer runs and a consumer can inspect:
 
 1. Install the loader; boot the game once so Il2CppInterop generates proxies into `BepInEx/interop/`.
 2. Run `inutil-interoppatch --game <gameDir>` — flips proxy signatures to natural types, in place, atomically.
 3. If skipped, inutil warns loud at startup (`interop proxies look unpatched…`) — never a silent mismatch
    (the content-addressed marker, [roadmap §1](./roadmap.md), makes this a structural check).
 
-The CLI's `--game` auto-locator exists precisely so a launcher/installer can wrap it. This is a better model than
-the old preloader (deterministic, idempotent, inspectable, zero per-boot cost) — the bundle commits to it.
+The CLI's `--game` auto-locator exists precisely so a launcher/installer can wrap it. Offline is the better
+*deployment* model (deterministic, idempotent, inspectable, zero per-boot cost) — that is what the bundle
+commits to.
+
+The boot-time patcher is not an alternative to that model but a **backstop for a regenerated interop dir**: a
+game update, a file verify, or a wiped profile rewrites `interop/` from scratch, and the proxies are unpatched
+again until something patches them. Both paths call the same `InteropPatcher.PatchModule` over the same schema
+registry, so "patched on disk" and "patched in memory" cannot diverge — and both stamp/read the same marker, so
+whichever ran, the state is inspectable afterwards.
 
 ## Remaining work (ordered)
 
@@ -104,10 +129,10 @@ the old preloader (deterministic, idempotent, inspectable, zero per-boot cost) �
 
 ## Open decisions
 
-- **Refstubs for inutil's *own* CI.** The engine's game-free build (via `managed/refstubs`) is gone. Consumers no
-  longer need it — they consume the bundle. But inutil's own CI may still want a game-free build path; decide
-  whether to re-add refstubs *internally* (inutil's private concern) or always build against the staged
-  `.unity-build` fixture. This does **not** block the bundle.
+- ~~**Refstubs for inutil's *own* CI**~~ — **resolved:** the committed refstubs (`managed/refstubs`) are back and
+  are a first-class `pack.sh` mode. `PACK_BEPINEX_DIR` selects the GAME-FREE build: the refstubs stand in for the
+  fixture's generated interop proxies and the pinned BepInEx zip supplies the loader core, so the bundle builds
+  with no provisioned game at all (`-p:RefStubs`). That is also how a consumer's CI builds the engine.
 - ~~**MelonLoader in the bundle**~~ — **resolved:** one bundle carries **both** hosts as **per-loader trees**
   (`bepinex/` + `melonloader/`). The shared engine is byte-identical in each, so the second host costs ~one thin
   DLL and keeps inutil's dual-loader-parity property intact in the artifact.

@@ -17,8 +17,8 @@ The governing invariant, first, because it changes how you read everything below
 - **All three capabilities** — hooking, natural typing, mod hosting — plus the REPL, and the
   escape-hatch faces (`Safe`/`Invoke`/`Probe`/`Introspect`/`Fields`) are built and validated **in-game**.
 - **Both loaders at full parity.** As of this writing the in-game battery passes under BepInEx and
-  MelonLoader identically (77/77 core cases; 91/91 including the REPL cases). Those counts grow as cases
-  are added — treat the trackers as ground truth, not this number.
+  MelonLoader identically — **95/95**. That count grows as cases are added; the battery's own run is ground
+  truth, not this number.
 - The v1→v2 engine regressions — delegate params, virtual container-param
   flip, the REPL, the `Fields`/`Introspect`/`Invoke` surface, dual-loader validation — are all
   **re-ported and green**. What remains below is coverage holes and un-built ergonomics, not regressions.
@@ -26,7 +26,19 @@ The governing invariant, first, because it changes how you read everything below
 ## Natural typing — unbridged shapes (all fail loud)
 
 A shape that isn't flipped stays wrapper-typed; your mod either spells the `Il2CppSystem.*` type (compiles
-and works) or hits a `NotSupportedException` at the seam. Open holes (Gap 2):
+and works) or hits a `NotSupportedException` at the seam.
+
+**"Fail loud" needed a mechanism to stay true.** It held for shapes a pass *considered* and declined — but a
+member no pass ever classified produced no flip, no defer, no log line, and simply did not appear. Three
+holes lived there (a method-backed `Nullable` accessor, a static container setter, a static `Nullable`
+setter); one of them emitted **invalid IL** rather than declining. `ResidualAudit` now runs after every pass
+and names every member still wearing a type some family could have flipped, marking it a known deferral or
+an **unexplained hole** — see [interop-patch (11)](../contribution/architecture/11-interop-patch.md). The
+fixture asserts zero residual after a directory patch. One soft spot remains, recorded there: the audit's
+`virtual` reason is coarse now that virtual returns *and* accessors both flip, so a virtual residual is
+something to investigate rather than accept.
+
+Open holes (Gap 2):
 
 | Shape | Status | Detail |
 |---|---|---|
@@ -48,6 +60,13 @@ original's result and the warning log gets the exception.
 - **Depends on the game not stripping attribute metadata.** Wire-name recovery reads the game's metadata
   offline; if a shipped game strips it, member-name remapping **degrades to member-name keys** (no wire
   remap) — a graceful fallback, never a hard failure, but outside anyone's control once a game ships.
+- **Checked wire shapes inherit that dependency.** `Json.ToNode`/`To<T>(shape)`
+  ([guide 5](../guide/05-wire-json.md)) validates object-literal keys against the *recovered* wire members,
+  so a type absent from the wiremap has nothing to check — it says so loudly rather than rejecting every key
+  as a typo, and such a type is built from a JSON string instead.
+- **The key check proves existence, not completeness.** It catches a member you *misspelled*; it cannot
+  catch one you *omitted*, which stays at its default. A round-trip against the game's own serializer is
+  still the way to verify a minted object's shape.
 
 ## Escape hatches
 

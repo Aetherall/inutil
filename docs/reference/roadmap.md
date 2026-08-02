@@ -21,8 +21,10 @@ Two arcs have each reached a milestone where the hard part is behind us:
   (see `docs/reference/natural-dx.md`); the pillar's surviving consumer is
   `Inutil.InteropPatch/WireMap.cs`'s member-name remapping at patch time
   (`docs/contribution/architecture/16-metadata.md`). The in-game battery has grown well past that
-  baseline — now **77/77 core, 91/91 with the REPL cases** (`docs/reference/limits.md` is the count
-  source of truth).
+  baseline — now **95/95 under both loaders** (`docs/reference/limits.md` is the count source of truth).
+  The pillar has since earned a second consumer: the **checked wire shape** (`Json.ToNode`/`To<T>(shape)`,
+  `docs/guide/05-wire-json.md`) validates object-literal keys against the recovered names, so a
+  misspelled member fails at the call site instead of silently defaulting.
 
 So the open work is no longer "make the hard thing correct" — it is a prioritization call across the
 four directions below. Two of these (§1 marker, §2 wire-map) are the standing
@@ -179,6 +181,18 @@ Named here so they do not fall out of the roadmap:
   has nothing to detour — true of every hook). Nothing in Discover is silent.
 - **Interop-patch flip scope holes** (`docs/reference/limits.md` Gap 2) — value-Nullable-inside-a-container defers the
   whole flip; generic-method container flip is the deferred "v17" case. Both fail loud.
+- **`Nullable`/container ACCESSOR coverage** — ✅ DONE. Every rung the accessor pass owns now flips and is
+  proven on ToyGame under both loaders: instance × static × value × ref-bearing × field-backed ×
+  method-backed, plus the virtual vtable lockstep (`get_X`/`set_X` are separate slots, so a property flips
+  only if both do). Found in the process, and the reason this arc mattered: these were **silent**, not
+  fail-loud — an auto-property's backing field flipped while the property itself deferred, and one static
+  case emitted invalid IL that shipped into a real game's proxies. `ResidualAudit` is the structural answer
+  (`docs/contribution/architecture/11-interop-patch.md`); the fixture asserts zero residual.
+- **Tighten `ResidualAudit`'s `virtual` reason** — ⬜ open, small. With virtual returns and virtual accessors
+  both flipping, the only legitimate virtual deferrals left are the planner's slot gates (external /
+  framework root), but the audit cannot currently tell those apart — so on a real game it reports a
+  known-deferred count nobody has verified. Needs slot-root resolution inside the audit. This is the one
+  place a real hole could still read as expected.
 - **The distributable engine bundle** (`docs/reference/packaging.md`) — make inutil ship a versioned bundle so
   consumers (the OpenTarkov engine) stop rebuilding it from source. Discharges the `docs/reference/limits.md`
   "Packaging & build" gap; unblocks the engine's migration off the last pre-rewrite pin. **In progress:**
