@@ -209,6 +209,65 @@ public static class ModHostCases
                  + $"Suppress +{dSuppressBase}->+{dSuppressHooked} (fabricated Task, original skipped), teardown +{dAfter} ({removed} sub removed)";
         });
 
+        // Non-generic Task WITH ARGUMENTS — the shape the case above cannot reach, because Commit/Suppress are
+        // PARAMETERLESS. That gap is not academic: on the strength of the parameterless case passing, a consumer's
+        // three raw-tier workarounds were declared stale and converted, and two of them threw
+        // `ArgumentOutOfRangeException` out of the hook dispatch on the first boot — the hook fired, logged, and
+        // then failed to run the original. Four data points now bound it:
+        //
+        //     Task    Commit()                      0 args   -> works        (case above)
+        //     Task    Suppress()                    0 args   -> works        (case above)
+        //     Task<T> GamePrepare(bool)             1 arg    -> works        (consumer, in production)
+        //     Task    InternalStartGame(s,b,b)      3 args   -> ArgumentOutOfRangeException
+        //     Task    StartTutorial(b,b)            2 args   -> ArgumentOutOfRangeException
+        //
+        // so the boundary is neither Task-vs-not nor generic-vs-not: it is a NON-GENERIC Task with args. This case
+        // pins that distinction — it SKIPs until ToyGame is rebuilt with Game::CommitWith, and a skip here means
+        // "unproven", never "fine".
+        suite.Add("modhost.hook.nongeneric-task.with-args", () =>
+        {
+            MethodInfo? commitWith = TryProxy("Game", "CommitWith");
+            if (commitWith is null) Check.Skip("Game::CommitWith absent — fixture predates the arg-bearing Task shape (rebuild ToyGame)");
+
+            string src = """
+                using Inutil;
+                using ToyGame;
+                using System.Threading.Tasks;
+                public sealed class InutilTaskArgHook : Hook<Game>
+                {
+                    // forward with REWRITTEN args — the idiom every consumer workaround was actually written to do
+                    Task CommitWith(string tag, bool doubled, int amount) => Proceed<Task>(tag, true, amount);
+                }
+                """;
+
+            object game = Instance();
+
+            // Baseline: (null,false,10) -> +10. With `doubled` forced true by the hook it must become +20.
+            int b0 = Score(game);
+            AwaitTask(commitWith!.Invoke(game, new object?[] { null, false, 10 }), "baseline CommitWith");
+            int dBase = Score(game) - b0;
+            Check.True(dBase == 10, $"baseline CommitWith(null,false,10) raised Score by {dBase}, expected 10");
+
+            if (!TryCompileAndLoad("inutiltaskarg", src, out Assembly modAsm, out ModContext alc)) return null;
+
+            int dHooked;
+            try
+            {
+                int wired = global::Inutil.Mods.Discover(modAsm);
+                Check.True(wired == 1, $"Discover wired {wired} hook method(s), expected 1 (Game::CommitWith)");
+
+                int s1 = Score(game);
+                object? returned = commitWith.Invoke(game, new object?[] { null, false, 10 });
+                AwaitTask(returned, "hooked CommitWith");
+                dHooked = Score(game) - s1;
+                Check.True(dHooked == 20,
+                    $"hooked CommitWith raised Score by {dHooked}, expected 20 — Proceed<Task>(args) did not run the original with the rewritten args");
+            }
+            finally { global::Inutil.Mods.RemoveAll(alc); alc.Unload(); }
+
+            return $"compiled Hook<Game> over non-generic Task WITH args: baseline +{dBase}, hooked +{dHooked} (Proceed<Task>(tag, true, amount))";
+        });
+
         // CONTAINER INTERFACE WIDENING at the ergonomic tier (HookMatch Tier 1, the FIRST fallback matcher end-to-end):
         // a hook may spell a READ-ONLY supertype (IReadOnlyList<int>) of the flipped proxy's concrete container param
         // (List<int>) and STILL bind — the matcher widens List -> IReadOnlyList (same element type, an engine-registered
@@ -797,6 +856,14 @@ public static class ModHostCases
         try { return (int)mi.Invoke(game, new object[] { arg })!; }
         catch (TargetInvocationException tie)
         { Check.True(false, $"invoking {mi.Name} threw {tie.InnerException?.GetType().Name}: {tie.InnerException?.Message}"); throw; }
+    }
+
+    // Proxy's non-throwing twin, for a fixture member that may predate the running ToyGame build — the caller
+    // turns a null into an explicit SKIP rather than a failure, so "not rebuilt yet" never reads as "broken".
+    internal static MethodInfo? TryProxy(string typeSimpleName, string methodName)
+    {
+        try { return Proxy(typeSimpleName, methodName); }
+        catch (AssertException) { return null; }
     }
 
     internal static MethodInfo Proxy(string typeSimpleName, string methodName)

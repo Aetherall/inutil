@@ -372,6 +372,17 @@ namespace ToyGame
         // (Score) so suppress-vs-forward is visible at runtime.
         public System.Threading.Tasks.Task Commit()   { Score += 7;  return System.Threading.Tasks.Task.CompletedTask; }  // a forwarding hook lets the +7 apply
         public System.Threading.Tasks.Task Suppress() { Score += 99; return System.Threading.Tasks.Task.CompletedTask; }  // a suppressing hook skips the +99
+        // Non-generic Task WITH ARGUMENTS — the shape Commit/Suppress cannot express, and the one that actually
+        // fails. Both parameterless spellings above work in-game; a consumer's Proceed<Task>(a, b, c) on a
+        // 2-and-3-arg method throws ArgumentOutOfRangeException out of the dispatch instead of running, while the
+        // same call on a GENERIC Task<T> with an arg is fine. So the boundary is not Task-vs-not and not
+        // generic-vs-not, it is non-generic Task WITH args — a distinction no fixture could show until this method.
+        // The args are echoed into Score so a mis-marshalled write is visible rather than merely non-fatal.
+        public System.Threading.Tasks.Task CommitWith(string tag, bool doubled, int amount)
+        {
+            Score += (doubled ? 2 : 1) * amount + (tag == null ? 0 : tag.Length);
+            return System.Threading.Tasks.Task.CompletedTask;
+        }
 
         // Task<T> RETURN where T is a REF-BEARING value type (Loadout{int;string} -> Il2CppSystem.ValueType VProxy) — a
         // struct with a managed reference INSIDE a Task result. Il2CppInterop's generic Task.FromResult<T> MIS-MARSHALS

@@ -8,7 +8,7 @@ distinction earned its place here: two entries in the first draft of this file w
 plausible-looking signature dump or summary line was trusted over the compiler. See "How the wrong answers happened"
 at the end — the failure modes are reusable.
 
-**Status:** G3, G4, G10, G12, G13 and G14 are closed and proven (G4 and G14 in-game under both loaders); **G8 was never a gap** — stale since the Task return flip, now disproven in-game under both loaders. G2 was
+**Status:** G3, G4, G10, G12, G13 and G14 are closed and proven (G4 and G14 in-game under both loaders). **G8 is half stale, half real** — a non-generic `Task` return works, but NOT with arguments (measured; see the table there). G2 was
 mis-stated and is restated below as a design question needing a decision before any code. Remaining: **G11**
 (re-diagnosed below — much smaller than first recorded, and an ordinary fix), G5's wiremap onboarding gap for
 CONSUMERS (G9 fixed inutil's own harness ordering, not a consumer's pipeline), then the ergonomic items (G6-G8).
@@ -16,10 +16,13 @@ CONSUMERS (G9 fixed inutil's own harness ordering, not a consumer's pipeline), t
 **Four entries in this file have now been wrong on first writing (G2, G8, G11, and G14's first fix), every time
 because a plausible reading was trusted over a measurement.** G14 is the sharpest case: the probe that "confirmed"
 the diagnosis was statically typed, which silently took a different dispatch path than the containers the bug lives
-in, and the resulting fix made things *worse* while passing every offline test. G8 is the most instructive: it was
-true when written, the thing that made it false landed later, and nothing re-ran it — a fixture existed for the test,
-its comments described the test, and only the method's *signature* was ever asserted. Prefer the oracle that runs the
-real shape, and re-run the ones you inherited.
+in, and the resulting fix made things *worse* while passing every offline test. G8 is the most instructive, and it
+went wrong TWICE in opposite directions: first recorded too broadly ("Task returns can't be replaced"), then — after
+a long-missing test was finally written and went green — declared "never a gap", which was too narrow by exactly the
+shape the new test could not express, since both fixture methods take no arguments. A test written to demonstrate a
+capability demonstrates the capability it was shaped for. Prefer the oracle that runs the real shape, re-run the
+claims you inherited, and when one source records two different exceptions under one label, believe the exceptions
+rather than the label.
 
 **G10 and G11 were found by ACTING on [GUIDANCE.md](./GUIDANCE.md), not by reading more code** — G10 by running §0
 (re-patch) on the consumer's real overlay, G11 by taking §4's advice and then probing it in a booted game. Both were
@@ -238,9 +241,31 @@ follow the convention.
 
 ---
 
-## G8 — a `Task`-returning method cannot be replaced ergonomically — **NOT A GAP (stale since the return flip)**
+## G8 — a `Task`-returning method cannot be replaced ergonomically — **HALF STALE, HALF REAL**
 
-Recorded as "the most consumer-visible ergonomic limit". It is not one. The exception it cites —
+> **CORRECTION.** This entry was first rewritten as "never a gap", on the strength of a battery case that only
+> covered PARAMETERLESS methods. Acting on that, three consumer sites were converted and two of them threw
+> `ArgumentOutOfRangeException` out of the hook dispatch on the first boot. The conversion is reverted. What is
+> actually true is below; the bound is **non-generic `Task` WITH arguments**.
+
+Five data points, all measured:
+
+| Shape | Args | Result |
+|---|---|---|
+| `Task Commit()` (ToyGame) | 0 | works — forwards via `Proceed<Task>()` |
+| `Task Suppress()` (ToyGame) | 0 | works — replaces with a fabricated Task |
+| `Task<IResult> GamePrepare(bool)` (EFT, in production) | 1 | works |
+| `Task StartTutorial(bool, bool)` (EFT) | 2 | **ArgumentOutOfRangeException** |
+| `Task InternalStartGame(string, bool, bool)` (EFT) | 3 | **ArgumentOutOfRangeException** |
+
+So the boundary is neither Task-vs-not nor generic-vs-not. A non-generic `Task` return works, and arguments work;
+the two **together** fail. The hook binds and its body runs — `[FLR] InternalStartGame: isLocalGame True -> true`
+was logged, twice — and then `Proceed<Task>(gameMap, true, isBotEnabled)` throws instead of running the original,
+surfacing as `inutil hook TarkovApplication::InternalStartGame threw ArgumentOutOfRangeException: Index was out of
+range` plus a client-side `AggregateException`. Root cause not isolated; it is inside the dispatch, not the
+consumer's body.
+
+**What IS stale, and it is worth keeping separate.** The exception the ForceLocalRaid workaround cites —
 `MissingMethodException: Constructor on type 'System.Threading.Tasks.Task' not found` from `Hook<T>` +
 `Proceed<Task>` — was real, and it is the **UNFLIPPED** case. inutil's own bind-time validator has always said so
 (`Inutil.Mods.Tests`: *"ValidateReturn REJECTS managed Task vs an unflipped il2cpp Task return"* / *"passes a
@@ -258,28 +283,34 @@ teardown +99                                             — restored, so the su
 The second line also disposes of the stronger claim in the old entry ("the limit bites when a consumer needs to
 **transform** the result"): returning a fabricated `Task` in place of the original works, which is transformation.
 
-**How it survived.** Three things pointed the same wrong way at once. The fixture methods `Game::Commit`/`Suppress`
+**How the WRONG conclusion survived, which is the reusable part.** The fixture methods `Game::Commit`/`Suppress`
 were added FOR this test — their comments read *"a forwarding hook lets the +7 apply"* / *"a suppressing hook skips
-the +99"* — but only their SIGNATURE was ever asserted (`TaskFlipCases`: "Commit returns natural Task"), so the
-suite looked like it covered them. The consumer's workaround comment named a real exception with a real reproduction,
-so it read as current. And the consumer had a working counter-example **in the same file** the whole time:
-`GamePrepareGate` is an ergonomic `Hook<EFT.TarkovApplication>` doing `Proceed<Task<IResult>>(isRaid)`, while
-`StartTutorialGate` twelve lines below drops to the raw tier citing "the same documented boundary". Generic
-`Task<T>` was working while bare `Task` was assumed broken — but the discriminator was never generic-vs-not, it was
-flipped-vs-not.
+the +99"* — but only their SIGNATURE was ever asserted (`TaskFlipCases`: "Commit returns natural Task"). Writing the
+missing case made the suite green and felt like closure; what it actually proved was the parameterless shape, and
+**both fixture methods are parameterless**, so the case could not have found this even in principle. A fixture
+written to demonstrate a capability will demonstrate exactly the capability it was shaped for.
 
-**Consumer follow-up (not done here):** three OpenTarkov sites still take the raw tier for this reason —
-`ForceLocalRaid.InternalStartGame`, `ForceLocalRaidMode.OnReadyToStartMatchingAsync`,
-`StartTutorialGate.StartTutorial`. All three are now convertible; `StartTutorialGate` in particular collapses from
-`Skip()` + `SetReturnTask()` to simply returning its own `Task`. A fourth raw-tier site, `AutoLogin`'s
-`add_OnLogin`, is a genuinely different and still-current limit: its parameter is
+The consumer's two workaround comments were also collapsed into one when they recorded **different exceptions**:
+`ForceLocalRaid.cs` cites `MissingMethodException` (the unflipped return — genuinely stale), while
+`GamePrepareGate.cs:122` cites *"`Proceed<Task>(...)` threw ArgumentOutOfRangeException instead of running"* — which
+is this live bug, correctly recorded, and dismissed as "the same documented boundary" by both the consumer and the
+review of it. **Two different exceptions under one label is a signal, not a duplicate.**
+
+`modhost.hook.nongeneric-task.with-args` now pins the real bound, over a new `Game::CommitWith(string, bool, int)`
+— it SKIPs until ToyGame is rebuilt (needs a Unity seat), and a skip there means *unproven*, never *fine*.
+
+**Consumer status:** all four raw-tier sites stay raw, and only one of them for a stale reason.
+`ForceLocalRaid.InternalStartGame` (3 args) and `StartTutorialGate.StartTutorial` (2 args) are blocked by the bug
+above. `ForceLocalRaidMode.OnReadyToStartMatchingAsync` takes 0 args and is on proven ground, but was reverted with
+the others rather than left as the single converted hook in a file whose sibling must stay raw. `AutoLogin`'s
+`add_OnLogin` is a genuinely different and still-current limit: its parameter is
 `System.Action<string,string,bool,Il2CppSystem.Action<string,double>>`, a nested il2cpp delegate with no natural
 spelling, so hooking it ergonomically drags an `Il2Cpp*` spelling back into the consumer.
 
 `docs/reference/limits.md` was right all along — it scopes the failure to *"an **unflipped** il2cpp Task proxy"* and
-notes it is now rejected at Discover. `GUIDANCE.md` §8 asserted the old limit and is corrected. The citation in
-`ForceLocalRaid.cs:14` points at `docs/guide/04-escape-hatches.md`, which contains no such boundary (that file is
-about `Safe`/`Invoke`/`Probe`/`Fields`) — a dangling reference that helped the claim look sourced.
+notes it is now rejected at Discover. The citation in `ForceLocalRaid.cs:14` points at
+`docs/guide/04-escape-hatches.md`, which contains no such boundary (that file is about `Safe`/`Invoke`/`Probe`/
+`Fields`) — a dangling reference that helped the claim look sourced.
 
 ---
 

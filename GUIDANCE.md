@@ -211,23 +211,26 @@ Until those land, keep them where they are — one named helper per repo beats t
 
 ## 8. When you have to drop to the raw hook tier
 
-**A `Task` return is NOT one of those cases any more — re-patch (§0) and use `Hook<T>`.**
-`clientfix/ForceLocalRaid.cs:11-17` records the boundary accurately for the state it was written in, and it is worth
-reading as the model for how to record one — but its precondition is gone. The
-`MissingMethodException: Constructor on type 'System.Threading.Tasks.Task' not found` it cites is what an
-**unflipped** il2cpp Task proxy does; the interop patch now flips those returns (check with `surface-query --methods`
-— a natural `System.Threading.Tasks.Task` and no `[raw il2cpp]` tag), and both directions are proven in a booted
-game under both loaders (`modhost.hook.nongeneric-task`):
+**A `Task` return is only PARTLY one of those cases now — and the part that still bites is narrow and specific.**
+
+A non-generic `Task` with **arguments** cannot be forwarded ergonomically: `Proceed<Task>(a, b)` throws
+`ArgumentOutOfRangeException` out of the dispatch (the hook binds, its body runs, the original never does). A
+non-generic `Task` with **no** arguments works, and a generic `Task<T>` works with or without arguments. Keep the
+raw tier for the first shape only; the table in GAPS.md G8 has the measurements.
+What DOES work, proven in a booted game under both loaders (`modhost.hook.nongeneric-task`) — note both are
+parameterless, which is exactly the limit of that proof:
 
 ```csharp
 Task Commit()   => Proceed<Task>();      // forward: the original runs, its task round-trips  (+7 lands)
 Task Suppress() => Task.CompletedTask;   // replace: the original is skipped, your task reaches the game (+99 does not)
 ```
 
-So both shapes work ergonomically — forwarding *and* transforming the result. The tell that this was stale was
-already in the consumer's own tree: `GamePrepareGate` does `Proceed<Task<IResult>>(isRaid)` twelve lines above
-`StartTutorialGate`, which drops to the raw tier citing "the same documented boundary". Generic `Task<T>` was working
-the whole time; the discriminator was flipped-vs-unflipped, never generic-vs-not.
+The `MissingMethodException: Constructor on type 'System.Threading.Tasks.Task' not found` that
+`clientfix/ForceLocalRaid.cs:11-17` cites is a *different* failure from the arg-bearing one, and that one really is
+stale: it is what an **unflipped** il2cpp Task proxy does, and the patch now flips those returns (check with
+`surface-query --methods` — a natural `System.Threading.Tasks.Task`, untagged). Two exceptions, two causes, one
+label — worth separating before concluding anything, because `GamePrepareGate.cs:122` records the *other* one
+(`ArgumentOutOfRangeException`) under the same heading and it is still live.
 
 What still *does* need the raw tier: a parameter with no natural spelling. `AutoLogin`'s
 `add_OnLogin(System.Action<string,string,bool,Il2CppSystem.Action<string,double>>)` is the live example — a nested
