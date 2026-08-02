@@ -364,6 +364,40 @@ considering whether the marker should let a consumer detect "patched, but by an 
 
 ---
 
+## What is LEFT wearing an il2cpp spelling in the consumer, and why
+
+Taken from the other end: "no `Il2Cpp*` should remain in the consumer at all" — then probed site by site with the
+compiler against a freshly patched interop. Every **array wrapper** is now gone from `offline/` (0 occurrences of
+`Il2CppReferenceArray` / `Il2CppStructArray` / `Il2CppStringArray` / `Il2CppArrayBase`), and the last two of those
+were removed by *not building the DTO by hand* rather than by anything inutil does — see below. What remains falls
+into four buckets, and only the first three are inutil's to close:
+
+| Site | Spelling | Bucket |
+|---|---|---|
+| `HandbookInfo<TData>.Categories/Items`, `BackendArrayDto<T>.Elements` | `Il2CppArrayBase<T>` over the type's OWN generic param | **G2** — element kind unknown at patch time |
+| `RepeatableQuestTemplate.Rewards` and everything it infects (`Dictionary<…, IReadOnlyList<QuestReward>>`, the `TryCast`es, two method signatures) | `Il2CppSystem.Collections.Generic.IReadOnlyList<T>` | by-design read-only refusal — but it **spreads**: the container holding it can't flip either |
+| `HideoutAreaData.GlobalCustomization` values | `Il2CppSystem.Nullable<MongoID>` as a dictionary VALUE arg | nested — the ref-bearing Nullable flip that landed does not reach a generic argument |
+| `KeyToType(...)` → `Il2CppSystem.Type`, `GetRandomWeatherNode(Il2CppSystem.DateTime)`, `Cast<Il2CppSystem.Object>()` for the game's own Newtonsoft entry | il2cpp BCL types crossing a game API boundary | not a container at all; no correspondence to naturalize through |
+| `where T : Il2CppObjectBase`, `Il2CppType.Of<T>()`, `Il2CppSugar.ToManaged`, `Il2CppStringToManaged` | the interop/inutil API itself | **not a gap** — naming the proxy base class is what these mean |
+
+Three things worth taking from this:
+
+- **The read-only refusal is not contained.** `IReadOnlyList<T>` being a by-design refusal is defensible on its
+  own; what the consumer shows is that a refused type poisons every container that holds it, so one refusal became
+  ~7 il2cpp spellings across two files, including the signatures of two of their own helpers. Worth deciding
+  whether the refusal should still apply when the member is a *write target reached through a container*.
+- **G2 has a consumer-side escape that costs nothing.** Both G2 sites were DTOs the game only ever deserializes,
+  so the consumer now builds them with `Json.To<T>("{…\"elements\":[]}")` and never names the wrapper. That is a
+  real answer for the "array over an open generic param" shape — but only where a wire form exists, and it trades
+  a compile-checked construction for a JSON literal, so it wants the wiremap (G5) to be checkable.
+- **`Il2CppObjectBase` in a constraint is a false positive** for any "count the il2cpp spellings" metric. A
+  generic helper over proxies has to name the proxy base class; that is the type system working, not a leak.
+
+All rows above were compile-probed (the natural spelling was written, `inutil-check` rejected it, the probe was
+reverted) — not read off a signature dump, for the reason G3 exists.
+
+---
+
 ## How the wrong answers happened
 
 Both retracted findings came from trusting a summary over the compiler. Worth keeping, because both traps are
