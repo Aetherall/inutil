@@ -48,6 +48,15 @@ namespace ToyGame
         // Count) so a battery read proves the OVERRIDE dispatched through the flipped slot AND the dematerialized
         // il2cpp list arrived with the right length.
         public virtual int Muster(List<int> squad) => squad.Count + Tag;
+        // VIRTUAL Nullable ACCESSOR (the accessor twin of Waypoint above): a virtual PROPERTY whose type is a
+        // Nullable<T>. Its get_/set_ are vtable slots, so flipping them needs the same base+override lockstep a
+        // virtual RETURN gets — which is why the accessor pass defers any virtual accessor today. Both rungs, since
+        // they flip to different natural types (System.Nullable<Vec3> vs the bare Loadout proxy):
+        public virtual Vec3?    Beacon { get; set; }
+        public virtual Loadout? Cache  { get; set; }
+        // Read-backs through the game's own typed view, so a battery case can prove a write LANDED, not merely compiled.
+        public virtual float PeekBeaconX()   => Beacon.HasValue ? Beacon.Value.X : -1f;
+        public virtual int   PeekCacheGold() => Cache.HasValue ? Cache.Value.Gold : -1;
     }
     public class Boss : Entity
     {
@@ -56,6 +65,18 @@ namespace ToyGame
         public override Vec3? Waypoint(int i) => i == 0 ? (Vec3?)null : new Vec3(i * 2, i * 2, i * 2);   // override in the same slot
         public override List<int> Ranks(int n) => new List<int> { n * 2, Tag };                          // override in the same slot (n*2, Tag=1000)
         public override int Muster(List<int> squad) => squad.Count * 2 + Tag;                            // override in the same slot (Count*2, Tag=1000)
+        // Overrides in the same accessor slots. The override STORES A DIFFERENT VALUE than it is handed (X+1 / Gold+1)
+        // so a battery read proves dispatch went through the OVERRIDE's flipped accessor, not the base's.
+        public override Vec3? Beacon
+        {
+            get => base.Beacon;
+            set => base.Beacon = value.HasValue ? new Vec3(value.Value.X + 1, value.Value.Y, value.Value.Z) : value;
+        }
+        public override Loadout? Cache
+        {
+            get => base.Cache;
+            set => base.Cache = value.HasValue ? new Loadout { Gold = value.Value.Gold + 1, Owner = value.Value.Owner } : value;
+        }
     }
 
     // Generic class: closed instantiations over a *reference* T share one __Canon native body/methodPointer
@@ -176,6 +197,18 @@ namespace ToyGame
         // --- by-name field-access fixture (Inutil.Fields): a STATIC field + a Nullable value field ---
         public static int HighScore;                                                       // static field        -> GetValue/SetValue static routing
         public int?       Bonus;                                                            // Nullable<int> field -> Get/SetNullable
+
+        // --- STATIC field fixture for the interop-patch accessor passes ---
+        // Il2CppInterop renders a static field as a static PROPERTY whose accessors are field-backed, and BOTH
+        // accessor passes assumed an instance: the Nullable pass emitted `ldarg.0` as `this` (arg0 of a static setter
+        // is the VALUE — invalid IL, shipped into a real game's proxies), and the container pass looks for `ldarg.1`
+        // to splice after, which a static setter does not have (it defers, safely but silently). ToyGame had NO
+        // static field of either shape, so its zero-residual result meant "shape absent", not "shape covered" — the
+        // machine check could not see either gap. These two put the shapes in front of it.
+        public static Vec3?     Rally;                                                      // STATIC Nullable field   -> the miscompile case (must DEFER until a static write helper exists)
+        public static List<int> Squad  = new List<int> { 1, 2, 3 };                          // STATIC container field  -> the ldarg.1 case (NB: `Roster` is taken by a method below)
+        public static float PeekRallyX()  => Rally.HasValue ? Rally.Value.X : -1f;           // independent read-backs (static storage)
+        public static int   PeekSquadN()  => Squad != null ? Squad.Count : -1;
         public int PeekHighScore() => HighScore;                                            // independent read-back (static storage, shared across instances)
         public int PeekBonus()     => Bonus.HasValue ? Bonus.Value : -1;
 

@@ -11,12 +11,12 @@ public sealed record DirectoryPatchResult(
     IReadOnlyList<string> Unreadable,                            // non-.NET / corrupt DLLs Cecil could not load
     int TotalFlipped,
     string SchemaHash,                                           // the §7.2 marker stamped in the dir (SchemaMarker.Hash)
-    IReadOnlyList<ResidualNullable> Residual,                    // members left il2cpp-Nullable AFTER every pass ran
+    IReadOnlyList<Residual> Residual,                    // members left naturalizable-but-unflipped AFTER every pass
     IReadOnlyList<(string Dll, string Defer)> Defers)            // every defer, from EVERY module — see below
 {
     // Residuals with no known deferral reason: a pass should have covered these and did not. The number a caller
     // (CLI, test, consumer installer) should actually act on.
-    public IReadOnlyList<ResidualNullable> Unexplained => Residual.Where(r => r.Unexplained).ToList();
+    public IReadOnlyList<Residual> Unexplained => Residual.Where(r => r.Unexplained).ToList();
 }
 
 // The patcher-APPLY driver: apply the IL-rewrite to the proxy DLLs of one interop directory in place.
@@ -43,7 +43,7 @@ public static class InteropPatcher
         var patched = new List<(string, RewriteResult)>();
         var unchanged = new List<string>();
         var unreadable = new List<string>();
-        var residual = new List<ResidualNullable>();
+        var residual = new List<Residual>();
         var defers = new List<(string, string)>();
         int total = 0;
 
@@ -74,8 +74,8 @@ public static class InteropPatcher
                 foreach (string d in result.Defers) defers.Add((name, d));
 
                 // Audit AFTER every pass has run on this module, on the post-rewrite state: what is still
-                // il2cpp-Nullable-typed, and is there a known reason? (See ResidualNullableAudit.)
-                residual.AddRange(ResidualNullableAudit.Scan(module));
+                // wearing a naturalizable il2cpp type (Nullable or container), and is there a known reason? (See ResidualAudit.)
+                residual.AddRange(ResidualAudit.Scan(module));
 
                 if (result.Flipped > 0 || normalized)
                 {
@@ -114,9 +114,9 @@ public static class InteropPatcher
         if (residual.Count > 0)
         {
             var unexplained = residual.Where(x => x.Unexplained).ToList();
-            log?.WriteLine($"\n>> residual: {residual.Count} member(s) still il2cpp Nullable-typed " +
+            log?.WriteLine($"\n>> residual: {residual.Count} member(s) left wearing a naturalizable il2cpp type " +
                            $"({residual.Count - unexplained.Count} known-deferred, {unexplained.Count} unexplained)");
-            foreach (ResidualNullable x in unexplained)
+            foreach (Residual x in unexplained)
                 log?.WriteLine($"   !! HOLE  {x.Module}: {x.Member}  ({x.Why})");
         }
 

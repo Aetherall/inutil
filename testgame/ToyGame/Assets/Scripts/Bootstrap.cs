@@ -106,6 +106,22 @@ public class Bootstrap : MonoBehaviour
         _p.Backpack = new Loadout { Gold = _tick, Owner = "pack" }; Loadout? backPk = _p.Backpack;
         float wayX = _p.PeekWaypointX(); int packGold = _p.PeekBackpackGold(); string packOwner = _p.PeekBackpackOwner();
 
+        // VIRTUAL Nullable accessors (Entity/Boss::Beacon, ::Cache) — root BOTH directions on BOTH the base and the
+        // override, so IL2CPP keeps every vtable accessor slot the lockstep flip must cover (a slot whose accessors
+        // are never called can be dropped, taking the override half of the fixture with it).
+        var baseEnt = new Entity();
+        baseEnt.Beacon = new Vec3(_tick, _tick, _tick); Vec3? beaconBase = baseEnt.Beacon;
+        baseEnt.Cache = new Loadout { Gold = _tick, Owner = "cache" }; Loadout? cacheBase = baseEnt.Cache;
+        ent.Beacon = new Vec3(_tick, _tick, _tick); Vec3? beaconOvr = ent.Beacon;              // through Boss's override
+        ent.Cache = new Loadout { Gold = _tick, Owner = "cache" }; Loadout? cacheOvr = ent.Cache;
+        float bx = ent.PeekBeaconX(); int cg = ent.PeekCacheGold();
+
+        // STATIC accessor shapes (Game::Rally — Nullable; Game::Squad — container). Rooted so IL2CPP keeps the
+        // static accessors the two passes stumble on.
+        Game.Rally = new Vec3(_tick, _tick, _tick); Vec3? rally = Game.Rally;
+        Game.Squad = new List<int> { 1, 2, _tick }; List<int> squad2 = Game.Squad;
+        float rallyX = Game.PeekRallyX(); int squadN = Game.PeekSquadN();
+
         // type-friction surface — root the conversion-case members (Nullable / List / Dictionary / array /
         // delegate) so IL2CPP keeps their proxies and they're live targets for the TypeFrictionProbe.
         Vec3? spawn = _g.FindSpawn(_tick); Faction? side = _g.PreferredSide(_tick % 2 == 0); _g.GrantGold(5);

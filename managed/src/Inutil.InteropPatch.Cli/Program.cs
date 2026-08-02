@@ -62,12 +62,12 @@ if (r.Defers.Count > gameDefers.Count)
     Console.WriteLine($"   defer  ({r.Defers.Count - gameDefers.Count} more in framework proxies — deferred by design)");
 
 // What the patch LEFT behind, whether or not any pass noticed it. Known deferrals are a count; a residual with no
-// known reason is a hole a consumer will hit as a broken Nullable spelling, so it is named individually.
+// known reason is a hole a consumer meets as a raw il2cpp spelling, so it is named individually.
 if (r.Residual.Count > 0)
 {
-    Console.WriteLine($"\n== residual: {r.Residual.Count} member(s) still il2cpp Nullable-typed " +
+    Console.WriteLine($"\n== residual: {r.Residual.Count} member(s) left wearing a naturalizable il2cpp type " +
                       $"({r.Residual.Count - r.Unexplained.Count} known-deferred, {r.Unexplained.Count} unexplained) ==");
-    foreach (ResidualNullable x in r.Unexplained)
+    foreach (Residual x in r.Unexplained)
         Console.WriteLine($"   !! HOLE  {x.Module}: {x.Member}  ({x.Why})");
 }
 

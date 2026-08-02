@@ -269,7 +269,7 @@ try
         // AUDIT FIRST, while the module is still unflipped for these members: the residual audit must SEE them as
         // unexplained holes. A check that only ever runs against the fixed state cannot tell "covered" from "never
         // looked" — which is precisely the failure the audit exists to catch.
-        var preAudit = ResidualNullableAudit.Scan(module);
+        var preAudit = ResidualAudit.Scan(module);
         Check("audit SEES the unflipped method-backed accessors as unexplained holes (pre-flip)",
             preAudit.Any(x => x.Member.EndsWith("::Waypoint", StringComparison.Ordinal) && x.Unexplained)
             && preAudit.Any(x => x.Member.EndsWith("::Backpack", StringComparison.Ordinal) && x.Unexplained),
@@ -313,10 +313,56 @@ try
 
         // ...and now the audit must report them GONE. Both directions asserted, so neither a blind audit nor an
         // unflipped member can pass silently.
-        var postAudit = ResidualNullableAudit.Scan(module);
+        var postAudit = ResidualAudit.Scan(module);
         Check("audit reports NO unexplained residual after the accessor pass",
             !postAudit.Any(x => x.Unexplained),
             $"unexplained: [{string.Join(", ", postAudit.Where(x => x.Unexplained).Select(x => x.Member + " — " + x.Why))}]");
+
+        // STATIC accessors, both families — the shapes whose arg index is 0, not 1, because there is no `this`.
+        // ToyGame::Game.Squad (static container field) and ::Game.Rally (static Nullable field) exist so this is
+        // checked against the real generator's output rather than a hand-made body.
+        {
+            var stat = ModuleDefinition.ReadModule(Copy("Assembly-CSharp.dll"),
+                new ReaderParameters { InMemory = true, AssemblyResolver = resolver });
+            var statGame = stat.GetTypes().First(t => t.Name == "Game");
+
+            // CONTAINER: must FLIP. The pre-check used to look for a literal ldarg.1, which a static setter never
+            // has, so every static container property deferred — 529 in one real game, each left raw for mods.
+            var cRes = new ContainerFieldRewriter().RewriteModule(stat);
+            var squad = statGame.Properties.First(p => p.Name == "Squad");
+            Check("STATIC container property (Game::Squad) flips to System.Collections.Generic.List`1",
+                squad.PropertyType.FullName.StartsWith("System.Collections.Generic.List`1", StringComparison.Ordinal),
+                squad.PropertyType.FullName);
+            Check("...and its STATIC setter splices after ldarg.0 (the value slot when there is no `this`)",
+                squad.SetMethod!.IsStatic
+                && squad.SetMethod.Body.Instructions.Any(i => i.OpCode == OpCodes.Ldarg_0)
+                && squad.SetMethod.Body.Instructions.Any(i => i.Operand is MethodReference cmr
+                       && cmr.DeclaringType.FullName == "Inutil.Marshal.Il2CppMarshal" && cmr.Name == "ToIl2CppTyped"));
+            Check("...and the static getter still materializes via ToManaged",
+                squad.GetMethod!.Body.Instructions.Any(i => i.Operand is MethodReference gmr
+                    && gmr.DeclaringType.FullName == "Inutil.Marshal.Il2CppMarshal" && gmr.Name == "ToManaged"));
+            Check("idempotent: re-running the container field pass flips 0 (static included)",
+                new ContainerFieldRewriter().RewriteModule(stat).Flipped == 0);
+
+            // NULLABLE: must DEFER (its setter rebuild is instance-only and no static-field write helper exists).
+            var nRes = new NullableFieldRewriter().RewriteModule(stat);
+            var rally = statGame.Properties.First(p => p.Name == "Rally");
+            Check("STATIC Nullable property (Game::Rally) DEFERS rather than miscompiling",
+                nRes.Defers.Any(d => d.Contains("Rally", StringComparison.Ordinal)
+                                     && d.Contains("static field-backed setter", StringComparison.Ordinal)),
+                $"defers: [{string.Join(" | ", nRes.Defers.Where(d => d.Contains("Rally", StringComparison.Ordinal)))}]");
+            Check("...and Game::Rally is left il2cpp-typed, with no instance-shaped write spliced in",
+                rally.PropertyType.FullName.Contains("Il2CppSystem.Nullable", StringComparison.Ordinal)
+                && rally.SetMethod!.Body.Instructions.All(i => i.Operand is not MethodReference wmr
+                    || wmr.Name is not ("WriteNullableField" or "WriteNullableRefField")));
+            // ...and the audit names it as a KNOWN deferral, not a hole.
+            var statAudit = ResidualAudit.Scan(stat);
+            Check("...and the audit reports Game::Rally known-deferred (static), not unexplained",
+                statAudit.Any(x => x.Member.EndsWith("::Rally", StringComparison.Ordinal) && !x.Unexplained
+                                   && x.Why.Contains("static", StringComparison.Ordinal)),
+                $"[{string.Join(" | ", statAudit.Where(x => x.Member.Contains("Rally", StringComparison.Ordinal)).Select(x => x.Why))}]");
+            stat.Dispose();
+        }
 
         // STATIC field-backed setter must DEFER, not miscompile. The rebuild is instance-only (it emits `ldarg.0` as
         // `this` and calls WriteNullableField(Il2CppObjectBase, …)), but a static setter's arg0 is the VALUE and a
@@ -343,7 +389,7 @@ try
                     || smr.Name is not ("WriteNullableField" or "WriteNullableRefField")),
                 stProp.PropertyType.FullName);
             // The audit must call it a KNOWN deferral, not a hole — the reason is real and recorded.
-            var stAudit = ResidualNullableAudit.Scan(statModule);
+            var stAudit = ResidualAudit.Scan(statModule);
             Check("...and the audit reports it known-deferred (static), not unexplained",
                 stAudit.Any(x => x.Member.Contains("Waypoint", StringComparison.Ordinal) && !x.Unexplained
                                  && x.Why.Contains("static", StringComparison.Ordinal)),

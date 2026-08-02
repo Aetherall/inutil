@@ -290,6 +290,31 @@ public static class ContainerFlipCases
             return $"GrantGold(int? 5) then (int? null): Score {before} -> {after} (+5) — value-type Nullable param dematerialized present AND empty";
         });
 
+        // STATIC container field (Game::Squad). A static setter's value is ldarg.0 — the slot that holds `this` on an
+        // instance method — so the pre-check's literal ldarg.1 never matched and every static container property
+        // deferred (529 in one real game). Offline proves it flips; only a booted game proves the WRITE lands, since
+        // the static path stores through il2cpp_field_static_set_value rather than the instance field write.
+        suite.Add("container.static-field.flip.runs", () =>
+        {
+            MethodInfo peek = FindProxyMethod("Game", "PeekSquadN", out string typeName);
+            Type gameT = peek.DeclaringType!;
+            PropertyInfo squad = gameT.GetProperty("Squad")
+                ?? throw new AssertException($"{typeName}::Squad not found — the static container fixture is missing");
+            string pt = squad.PropertyType.FullName ?? squad.PropertyType.Name;
+            Check.True(pt.StartsWith("System.Collections.Generic.List", StringComparison.Ordinal),
+                $"{typeName}::Squad is '{pt}' — the static container property did not flip");
+
+            var written = new List<int> { 4, 5, 6, 7 };
+            squad.SetValue(null, written);                                   // static write: no instance
+            int n = Convert.ToInt32(peek.Invoke(null, null));                // the GAME's own read of the same storage
+            Check.True(n == written.Count,
+                $"Squad = List[{written.Count}] then PeekSquadN() = {n} — the static field write dematerialized wrong");
+            object? read = squad.GetValue(null);
+            Check.True(read is List<int> back && back.Count == written.Count,
+                $"get_Squad returned {read?.GetType().FullName ?? "null"} — the static getter did not materialize a natural List");
+            return $"static Game::Squad round-trip: wrote List[{written.Count}], game read {n} back (natural {pt})";
+        });
+
         // Nullable AUTO-PROPERTY (METHOD-backed accessors): Player::Waypoint (value element) and Player::Backpack
         // (ref-bearing element). An auto-property yields TWO proxy members over one storage — a FIELD-backed pair
         // over <X>k__BackingField and a METHOD-backed pair for the property itself (get_/set_ dispatch through
