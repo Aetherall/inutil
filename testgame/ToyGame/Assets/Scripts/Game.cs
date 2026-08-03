@@ -255,12 +255,31 @@ namespace ToyGame
         // il2cpp runs that via MethodInfo::invoker_method (what inutil overwrites to hook), but Delegate.Invoke dispatches
         // through method_ptr, so the hook is bypassed.
         private readonly Func<int, int> _tallyVia;                                         // delegate over Tally, built in the ctor — BEFORE any hook
-        public Game() { _tallyVia = Tally; Bonus = 7; }
+        public Game() { _tallyVia = Tally; _throwingVia = ThrowingTally; Bonus = 7; }
         public int    Tally(int n) => Score + n;                                           // non-generic delegate target (own body)
         public int    InvokeDirectTally(int n) => Tally(n);                                // in-game compiled DIRECT call (control)
         public int    InvokeStoredTally(int n) => _tallyVia(n);                            // dispatch Tally THROUGH the pre-built delegate
         public Player EchoPlayerDirect(Player p)      => Echo<Player>(p);                   // in-game DIRECT call to a __Canon generic
         public Player EchoPlayerViaDelegate(Player p) { Func<Player, Player> f = Echo<Player>; return f(p); } // via delegate (the gap)
+
+        // SEH-unwind fixture: a hooked method whose ORIGINAL THROWS, called from a game-side try/catch.
+        // il2cpp raises managed exceptions as MSVC C++ EH (this binary carries the ThrowInfo magic and a
+        // `.?AUIl2CppExceptionWrapper@@` RTTI descriptor), and x64 unwinds EXCLUSIVELY through .pdata/.xdata —
+        // there is no frame-pointer chain fallback. With a hook installed on ThrowingTally, inutil's thunk
+        // frame sits directly between CatchThrowingTally and the throw, so an unannotated thunk makes
+        // RtlLookupFunctionEntry miss, the unwinder assume a LEAF frame (return address at [rsp] — wrong by
+        // the whole frame) and walk into garbage. Then this catch never runs correctly: the symptom is "a
+        // try/catch around a hooked call stopped working", surfacing downstream as NREs off a handler that
+        // resumed on a corrupted register context. Dispatched through a ctor-built delegate (like _tallyVia)
+        // so il2cpp cannot inline the body away — a detour needs a real methodPointer to patch.
+        private readonly Func<int, int> _throwingVia;                                      // delegate over ThrowingTally, built in the ctor
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        public int    ThrowingTally(int n) => throw new InvalidOperationException("toygame-throw:" + n);
+        public string CatchThrowingTally(int n)                                            // the OUTER managed frame that must catch it
+        {
+            try { return "no-throw:" + _throwingVia(n); }
+            catch (InvalidOperationException e) { return "caught:" + e.Message; }
+        }
 
         public void AddScore(int n) { Score += n; }                                       // overload (1 arg)
         public void AddScore(int n, float mult) { Score += (int)(n * mult); }              // overload (2 args)

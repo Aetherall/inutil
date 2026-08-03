@@ -235,9 +235,17 @@ internal static unsafe class HookDispatch
             _self = b.IsStatic ? null : b.MakeReceiver(ctx.ThisPtr);
             object?[] args = b.ReadArgs(ctx);
             object? result = b.HookMethod.Invoke(b.Instance, args);
-            ctx.Skip();                                  // the body IS the method now — don't also auto-run the original
+            // Stage the frame FIRST, commit the skip LAST. Both writes are fallible — Il2CppMarshal.ToIl2Cpp
+            // fails loud on a correspondence mismatch, an unresolvable proxy, or a foreign CLR object — and
+            // skipping before they run made that throw silently REPLACE the method with the thunk's zeroed
+            // RetFrame: the game got null back from a reference-returning method and NRE'd at the call site,
+            // with only a warning in the log. With the skip last, a failed marshal degrades to "the original
+            // ran" (the caller gets a real value) instead of "the method silently returned null".
+            // Skip is idempotent and Proceed sets it itself, so a body that already ran the original via
+            // Proceed keeps its skip here — the double-run seam stays closed on this path too.
             b.WriteReturn(ctx, result);
             b.WriteRefOutArgs(ctx, args);                // ref/out params are the replaced method's outputs -> the caller's storage
+            ctx.Skip();                                  // the body IS the method now — don't also auto-run the original
         }
         catch (TargetInvocationException tie)
         {

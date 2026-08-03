@@ -25,6 +25,14 @@
  *   [0x78]       return XMM0
  *   [0x80..0x8F] pad
  *
+ * EVERY proc in this file MUST carry .seh_* unwind annotations. il2cpp propagates managed exceptions as
+ * MSVC C++ EH (the ThrowInfo magic + a `.?AUIl2CppExceptionWrapper@@` RTTI descriptor live in the game's
+ * own binary), and x64 SEH unwinds EXCLUSIVELY through .pdata/.xdata — there is no frame-pointer chain
+ * fallback. These procs sit between the game's caller and the hooked original, so an unannotated frame
+ * makes RtlLookupFunctionEntry miss, the unwinder assume a LEAF (return address at [rsp] — wrong by the
+ * whole frame), and a throwing original unwind into garbage instead of the caller's catch. Annotated =
+ * a game-side try/catch around a hooked call keeps working. See HookCases "hook.original.throws.*".
+ *
  * >4-arg methods ARE supported: the caller's 5th+ args sit above the return address (at rbp+0x30,
  * a fixed offset), exposed read/write to the hook via CallFrame.Stack. Before CALLing the original
  * we re-stage them (a hook may have rewritten them) into the original's incoming-arg area, then call
@@ -36,9 +44,20 @@
     .def    inutil_thunk_post; .scl 2; .type 32; .endef
 
 inutil_thunk_post:
+    .seh_proc inutil_thunk_post
     push    rbp
+    .seh_pushreg rbp
     mov     rbp, rsp
+    /* .seh_setframe (UWOP_SET_FPREG), NOT a bare .seh_stackalloc: rsp is DYNAMIC in this body — the
+     * `sub rsp,0x80` below lowers it another 0x80 across the CALL to the original. A static alloc code
+     * would unwind that call site 0x80 short. With a frame register the unwinder recovers rsp from rbp
+     * (rbp == entry rsp - 8 here, so FrameOffset 0) and the dynamic adjustment is transparent. rbp is
+     * pushed BEFORE the setframe, so its restore code still applies (the unwinder processes only the
+     * codes preceding UWOP_SET_FPREG in the prologue). */
+    .seh_setframe rbp, 0
     sub     rsp, 0x90
+    .seh_stackalloc 0x90
+    .seh_endprologue
     mov     [rsp+0x20], rcx
     mov     [rsp+0x28], rdx
     mov     [rsp+0x30], r8
@@ -110,6 +129,7 @@ inutil_thunk_post:
     add     rsp, 0x90
     pop     rbp
     ret
+    .seh_endproc
 
 /* The INVOKER thunk — the second interception path, for methods whose real entry isn't a
  * detourable methodPointer: fully-shared (__Canon) generic methods, which il2cpp dispatches
@@ -127,10 +147,15 @@ inutil_thunk_post:
     .globl  inutil_invoker_thunk
     .def    inutil_invoker_thunk; .scl 2; .type 32; .endef
 inutil_invoker_thunk:
+    .seh_proc inutil_invoker_thunk
     push    rbp
+    .seh_pushreg rbp
     mov     rbp, rsp
+    .seh_setframe rbp, 0
     mov     rax, [rbp+0x30]            /* ret (incoming 5th arg, at entry_rsp+0x28 = rbp+0x30) */
     sub     rsp, 0x40                  /* 0x20 shadow + 2 stack args, 16-aligned */
+    .seh_stackalloc 0x40
+    .seh_endprologue
     mov     r10, r9                    /* save params before shifting */
     mov     r9,  r8                    /* arg3 = obj    */
     mov     r8,  rdx                   /* arg2 = MethodInfo* */
@@ -142,6 +167,7 @@ inutil_invoker_thunk:
     add     rsp, 0x40
     pop     rbp
     ret
+    .seh_endproc
 
 /* The PROCEED routine — run the ORIGINAL from inside a hook (the "around" capability). Same re-stage +
  * CALL + spill-return sequence the post-thunk runs after pre-dispatch, but invoked ON DEMAND from managed
@@ -153,16 +179,28 @@ inutil_invoker_thunk:
     .globl  inutil_call_original
     .def    inutil_call_original; .scl 2; .type 32; .endef
 inutil_call_original:
+    /* Deliberately NO .seh_setframe here, unlike inutil_thunk_post: `mov rbp, rsp` precedes the
+     * rbx/rsi/rdi pushes, and UWOP_SET_FPREG makes the unwinder skip every code that comes before it in
+     * the array — which would be exactly those three restores, silently leaving the caller's callee-saved
+     * registers clobbered on an unwind. rsp is STATIC in this body (the 0x88 alloc is undone before the
+     * pops), so plain pushreg+stackalloc describes the frame completely and restores all four. */
+    .seh_proc inutil_call_original
     push    rbp
+    .seh_pushreg rbp
     mov     rbp, rsp
     push    rbx                        /* callee-saved: survive the CALL */
+    .seh_pushreg rbx
     push    rsi
+    .seh_pushreg rsi
     push    rdi
+    .seh_pushreg rdi
     mov     rbx, r8                    /* RetFrame*  */
     mov     rsi, rdx                   /* CallFrame* */
     mov     rdi, rcx                   /* trampoline */
 
     sub     rsp, 0x88                  /* 0x20 shadow + 8 stack-arg slots (+8 pad => 16-aligned at the CALL) */
+    .seh_stackalloc 0x88
+    .seh_endprologue
     mov     rax, [rsi+0x40]            /* CallFrame.Stack -> the caller's 5th+ args */
     mov     r10, [rax+0x00]; mov [rsp+0x20], r10   /* re-stage 8 slots (harmless if fewer real args) */
     mov     r10, [rax+0x08]; mov [rsp+0x28], r10
@@ -191,3 +229,4 @@ inutil_call_original:
     pop     rbx
     pop     rbp
     ret
+    .seh_endproc

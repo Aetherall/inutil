@@ -16,7 +16,7 @@ Il2CppMarshal,Il2CppConvRuntime}.cs`, `Fields/Fields.cs`, `Safe/Safe.cs`, `Inuti
 
 ## High
 
-### [ ] H1 — Reverse-P/Invoke dispatchers have no exception isolation
+### [x] H1 — Reverse-P/Invoke dispatchers have no exception isolation — FIXED
 
 **Where:** `managed/src/Inutil/Hooks/Hooks.cs:1168` (`Dispatch`), `:1183` (`PostDispatch`),
 `:1197` (`InvokePre`), `:1209` (`InvokePost`).
@@ -32,7 +32,24 @@ Every other seam is exception-isolated (`MainThread.Drain` `:87`, `Coroutines.St
 **Fix:** per-callback `try/catch → Hooks.OnWarning` inside the four loops. Keep it per-callback (not
 per-loop) so one bad hook doesn't suppress its siblings.
 
-### [ ] H2 — Hand-written thunks carry no SEH unwind data
+**Fixed with two levels, not one.** The per-callback catch is the isolation the finding asks for. A
+whole-body catch sits outside it because the *invariant* is "nothing escapes this transition", not "the
+raw callback that broke first is guarded": it also covers the table lookup, the `HookContext`
+construction, the sret fixup, and a warning sink that itself throws (`WarnSafe` swallows its own
+failures — the reporting path must not become the abort it reports). A dispatch-level failure returns
+`skip = 0`, so the original runs and the caller gets a real value — the same degrade `Around` makes.
+
+Checked the invariant across the tree rather than the four named sites: `[UnmanagedCallersOnly]` has
+exactly five occurrences in `managed/src`, and the fifth (`Safe/Safe.cs` `RunThunk`) was already
+isolated with the rule stated in its comment. All five edges now hold it.
+
+**Coverage:** `hook.raw.throw.isolated` — a throwing raw callback registered BEFORE a sibling; asserts
+the process survives, the sibling still fires, and the result is unchanged. Registering the thrower
+first is deliberate: a per-*loop* catch would swallow the rest of the chain, and this case fails on that
+too. Landing it also unblocked `hook.proceed.original.throws` (H2's Proceed-path coverage), which needs
+this isolation to exist before a throw out of `Proceed` can be observed rather than abort.
+
+### [x] H2 — Hand-written thunks carry no SEH unwind data — FIXED
 
 **Where:** `native/core/generic_thunk_post.S` — zero `.seh_*` directives in the file
 (`grep -c seh_` → 0).
@@ -50,6 +67,36 @@ leaf `jmp`s and need nothing.
 
 **Validation:** add a ToyGame battery case with a hooked method whose original deliberately throws a
 managed exception caught by an outer managed frame — must survive on both loaders.
+
+**Fixed as diagnosed, and confirmed on both sides of the boundary before changing anything:**
+- The three procs really had no `.pdata` entry in the linked `inutil_core.dll` (the C functions beside
+  them did) — checked by parsing the PE, not by grepping the source.
+- EFT's own `GameAssembly.dll` carries the `.?AUIl2CppExceptionWrapper@@` RTTI descriptor and the
+  `0x19930520` `ThrowInfo` magic, so il2cpp really does raise managed exceptions as MSVC C++ EH —
+  which unwinds exclusively through `.pdata`/`.xdata`.
+
+Two things worth keeping in mind for anyone touching this file again, both verified in the emitted
+unwind codes (`objdump` + a decode of the `.xdata`):
+- `inutil_thunk_post` **must** use `.seh_setframe rbp, 0`, not a bare `.seh_stackalloc`. Its rsp is
+  *dynamic* — `sub rsp,0x80` around the CALL to the original — so a static alloc code unwinds that call
+  site 0x80 short. With a frame register the unwinder recovers rsp from rbp and the adjustment is
+  transparent.
+- `inutil_call_original` must **not** use `.seh_setframe`, even though it has an rbp frame. Its
+  `mov rbp, rsp` precedes the `rbx/rsi/rdi` pushes, and `UWOP_SET_FPREG` makes the unwinder skip every
+  code before it in the array — silently leaving three callee-saved registers clobbered on an unwind.
+  Its rsp is static, so plain `pushreg`×4 + `stackalloc` describes the frame completely.
+
+**Regression gate:** `native/cmake/check-unwind.py`, wired as a POST_BUILD step on `inutil_core`. It
+reads the proc list out of the `.S` (`.globl` + matching label) and requires each to be covered in the
+linked PE's `.pdata`, so a *newly added* thunk that forgets its annotations fails on the build that adds
+it — rather than a check naming the three symbols that happened to be broken this time. Verified
+discriminating: stripping one proc's directives fails the build naming that proc.
+
+**Behavioural coverage:** `hook.original.throws.unwinds` (HookCases) — a hooked `ThrowingTally` whose
+original throws, called from ToyGame's own `CatchThrowingTally` try/catch. Covers the auto-run path
+(`inutil_thunk_post`). The Proceed path (`inutil_call_original`) is annotated to the same standard but
+has **no behavioural coverage**: an exception raised inside `c.Proceed()` escapes through the raw-tier
+callback, which has no isolation yet — see H1, which must land before that case can be written.
 
 ### [ ] H3 — REPL transports are CSRF-open; loopback binding is not a defence against a browser
 
@@ -148,7 +195,7 @@ No coverage: nothing in `managed/test/Battery/Cases/` references either method.
 implementation, same source as the twins. This is the "enforce the invariant, not the instance" shape:
 it survives an il2cpp/Unity layout change instead of silently corrupting on one.
 
-### [ ] M5 — Return-marshal failure silently replaces the method with `null`/`0`
+### [x] M5 — Return-marshal failure silently replaces the method with `null`/`0` — FIXED (but see reachability)
 
 **Where:** `Mods/Hook.cs:238-240` (`HookDispatch.Around`).
 
@@ -160,6 +207,28 @@ The game sees a successful call returning null.
 
 **Fix:** marshal into a temp *before* `Skip()`, or clear the skip cell in the catch — so the degraded
 outcome is "the original ran" rather than "silently returned null".
+
+**Fixed by ordering, needing neither a temp nor an un-skip:** stage the frame first
+(`WriteReturn` / `WriteRefOutArgs`), commit `ctx.Skip()` last. `Skip` is idempotent and `Proceed` sets
+its own, so a body that already ran the original keeps its skip and the double-run seam stays closed —
+the two outcomes the alternatives had to special-case fall out of the order.
+
+**Reachability — the finding overstates it, and this is worth recording.** An attempt to write a
+battery case for the degraded path failed to produce one, because *every* arm of `WriteReturnSlot` is
+either non-throwing or throws only on an internal engine fault, and the hook's declared return type is
+bound EXACTLY to the (interop-patched, already-flipped) proxy signature at every `HookMatch` tier —
+Tier 1 widens params only, "return exact". So the spelling corresponds by construction:
+- proxy returns take `((Il2CppObjectBase)v).Pointer`, which cannot throw;
+- container returns marshal between corresponding types;
+- the "foreign CLR object" route is closed at the mod's COMPILE step — Il2CppInterop renders an il2cpp
+  interface as a *class* with an `(IntPtr)` ctor (`IDamageable.IDamageable(IntPtr)`), so a mod cannot
+  hand back its own pure-CLR implementation of a game interface.
+
+So the reorder is a correct, zero-cost defensive fix that closes the failure mode if any of those
+invariants ever slips (a new marshal path, a flip bug, a hand-built `HookBinding`) — but no mod a user
+can write today reaches it. It is therefore **deliberately untested**, not untested by omission: the
+alternative was an artificial ToyGame shape existing only to be marshalled wrongly, which would assert
+that the test fixture is broken rather than that the engine is right.
 
 ---
 

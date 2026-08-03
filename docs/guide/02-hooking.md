@@ -168,6 +168,20 @@ original has already run under your control and is never run a second time — t
 original's result. (A side-effecting game method can therefore never double-fire because your post-Proceed
 code threw.)
 
+If your body returns fine but its **return value can't be marshalled** back into the frame (a
+correspondence mismatch, an unresolvable proxy, a foreign CLR object — the cases `Il2CppMarshal` refuses
+loudly), that failure degrades the same way: the warning is logged and the *original runs*, so the caller
+gets a real value. It used to leave the method skipped with a zeroed return slot instead, which handed the
+game a `null` from a reference-returning method — a warning in the log and an NRE at the call site.
+
+The reverse direction is guaranteed too: when the **original throws** — a game method raising a normal
+managed exception — the exception propagates through inutil's frames into whatever `try/catch` the game
+has around the call, exactly as if the method were unhooked. That is not free; il2cpp raises managed
+exceptions as MSVC C++ EH, which unwinds x64 frames only through `.pdata`/`.xdata`, so the asm thunks
+carry explicit `.seh_*` annotations and the build refuses to link one that doesn't
+(`native/cmake/check-unwind.py`). Without them the unwinder walks past a hook's frame into garbage and the
+game's own `catch` stops working.
+
 One more validity rule with teeth: `Self`, `Proceed`, and a raw `HookContext` are **frame-scoped** — they
 do not survive an `await`, a `MainThread.Post`, or a coroutine step. Capture what you need synchronously;
 [8. Concurrency](./08-concurrency.md) is the chapter on doing async work from a hook safely.

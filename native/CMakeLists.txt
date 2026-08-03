@@ -37,3 +37,21 @@ target_include_directories(inutil_core PRIVATE core third_party/dotnet)
 target_link_options(inutil_core PRIVATE -Wl,--export-all-symbols -static-libgcc)
 set_target_properties(inutil_core PROPERTIES PREFIX "" OUTPUT_NAME "inutil_core")
 target_compile_options(inutil_core PRIVATE -O0)
+
+# --- x64 unwind-data gate -------------------------------------------------------
+# The asm thunks stand between the game's caller and the hooked original, and il2cpp raises managed
+# exceptions as MSVC C++ EH, which unwinds ONLY through .pdata/.xdata. A proc without .seh_* directives
+# gets no entry, so RtlLookupFunctionEntry misses it, the unwinder falls back to the leaf assumption and
+# walks into garbage — a game-side try/catch around a hooked call silently stops working. Gate the BUILD
+# on it rather than a test: the check reads the proc list out of the .S itself, so a newly added thunk
+# that forgets its annotations fails on the build that adds it.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  add_custom_command(TARGET inutil_core POST_BUILD
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check-unwind.py
+            ${CMAKE_OBJDUMP} $<TARGET_FILE:inutil_core>
+            ${CMAKE_CURRENT_SOURCE_DIR}/core/generic_thunk_post.S
+    VERBATIM)
+else()
+  message(WARNING "python3 not found — skipping the x64 unwind-data gate on the asm thunks")
+endif()

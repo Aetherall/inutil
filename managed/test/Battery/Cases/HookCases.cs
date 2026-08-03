@@ -158,6 +158,75 @@ public static class HookCases
             Check.True(r == 777, $"RoundTripNumber returned {r}, expected 777 — the hook's fabricated Task<int> result did not reach the game-side reader");
             return $"hook SetReturnTask(Task.FromResult(777)) + Skip() -> RoundTripNumber read the fabricated il2cpp Task result: {r}";
         });
+
+        // (10) SEH UNWIND — a hooked method whose ORIGINAL throws must still land in the game's OWN catch.
+        //      il2cpp raises managed exceptions as MSVC C++ EH and x64 unwinds only through .pdata/.xdata;
+        //      with the hook installed, inutil_thunk_post's frame is directly on that unwind path. Before the
+        //      .seh_* annotations it had NO .pdata entry, so RtlLookupFunctionEntry missed it and the unwinder
+        //      fell back to the leaf assumption (return address at [rsp], wrong by the whole 0x118-byte frame)
+        //      and walked into garbage — the shape behind "a try/catch around a hooked call stopped working",
+        //      showing up downstream as NREs off a handler resumed on a corrupted register context.
+        //
+        //      NB the hits assert comes FIRST and on purpose: CatchThrowingTally catches perfectly well with
+        //      no hook installed, so without pinning hits==1 this case would pass green while testing nothing.
+        //      This covers the auto-run path (inutil_thunk_post). The Proceed path (inutil_call_original) is
+        //      annotated to the same standard but is NOT covered here — an exception raised inside c.Proceed()
+        //      escapes through the raw-tier callback, which has no isolation yet (TODO-review H1).
+        suite.Add("hook.original.throws.unwinds", () =>
+        {
+            object game = Instance();
+            MethodInfo catcher = Proxy("Game", "CatchThrowingTally");
+            int hits = 0;
+            using var _ = HookApi.Pre("Assembly-CSharp", "ToyGame", "Game", "ThrowingTally", c => hits++, argc: 1);
+            string r = (string)catcher.Invoke(game, new object[] { 5 })!;
+            Check.True(hits == 1,
+                $"the ThrowingTally hook fired {hits}x, expected 1 — the throw never crossed inutil_thunk_post, so a green here would prove nothing about unwinding");
+            Check.True(r == "caught:toygame-throw:5",
+                $"the game's own catch produced '{r}', expected 'caught:toygame-throw:5' — the managed exception did not survive the unwind through the hook thunk");
+            return $"a hooked original's managed throw unwound through inutil_thunk_post into the game's own catch: {r}";
+        });
+
+        // (11) RAW-TIER EXCEPTION ISOLATION — a throwing raw callback must not abort the process, and must not
+        //      suppress its siblings. The four [UnmanagedCallersOnly] dispatchers are entered across a
+        //      managed->native transition, where an escaping managed exception is a rude abort, not a catchable
+        //      error. HookDispatch.Around covers the Hook<T> tier; the raw tier (this API, and the REPL) ran a
+        //      bare loop. Registered FIRST so the throw precedes the sibling — a per-loop (rather than
+        //      per-callback) catch would swallow the rest of the chain and this case would catch that too.
+        suite.Add("hook.raw.throw.isolated", () =>
+        {
+            var (game, tally) = Target();
+            int score = Score(game);
+            bool siblingRan = false;
+            using var bad = HookApi.Pre("Assembly-CSharp", "ToyGame", "Game", "Tally",
+                _ => throw new InvalidOperationException("deliberate raw-tier hook failure"), argc: 1);
+            using var good = HookApi.Pre("Assembly-CSharp", "ToyGame", "Game", "Tally", _ => siblingRan = true, argc: 1);
+            int r = Call(tally, game, 5);
+            Check.True(siblingRan, "the sibling raw hook never ran — one throwing callback suppressed the rest of the chain");
+            Check.True(r == score + 5, $"Tally returned {r}, expected {score + 5} — a throwing raw hook must degrade to unhooked, not corrupt the result");
+            return $"a throwing raw-tier hook was isolated: process alive, sibling still fired, Tally still returned {r}";
+        });
+
+        // (12) The SAME unwind as (10) but through inutil_call_original — the Proceed path, which runs the
+        //      original from a SECOND hand-written frame and so needs its own unwind data (and deliberately no
+        //      SET_FPREG, which would skip its rbx/rsi/rdi restores). What this pins down is the INVARIANT, not
+        //      the route: however the exception raised inside Proceed travels, it must neither abort the process
+        //      nor vanish — the game's own catch still has to see it. Whether it surfaces in the callback and the
+        //      dispatch degrades to auto-running the original, or propagates straight through, is CoreCLR's call,
+        //      not a contract inutil sets — so this asserts the observable, not the mechanism. Depends on (11)'s
+        //      isolation being in place: without it a throw out of Proceed leaves via the raw callback.
+        suite.Add("hook.proceed.original.throws", () =>
+        {
+            object game = Instance();
+            MethodInfo catcher = Proxy("Game", "CatchThrowingTally");
+            int entered = 0;
+            using var _ = HookApi.Pre("Assembly-CSharp", "ToyGame", "Game", "ThrowingTally",
+                c => { entered++; c.Proceed(); c.Skip(); }, argc: 1);
+            string r = (string)catcher.Invoke(game, new object[] { 7 })!;
+            Check.True(entered == 1, $"the hook body was entered {entered}x, expected 1 — the Proceed path was not exercised");
+            Check.True(r == "caught:toygame-throw:7",
+                $"the game's own catch produced '{r}', expected 'caught:toygame-throw:7' — a throw raised inside Proceed was swallowed or misrouted");
+            return $"a throw inside c.Proceed() crossed inutil_call_original without aborting; the game's catch still saw it: {r}";
+        });
     }
 
     // --- target resolution + reflective invoke (the TARGET stays proxy-typed only via reflection) ----------

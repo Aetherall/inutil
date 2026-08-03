@@ -1164,29 +1164,68 @@ public static unsafe class Hooks
     // Pre-hooks run in registration order and return SKIP (any hook called ctx.Skip()); post-hooks run
     // in REVERSE order (onion nesting). Each reads the volatile array reference once, so a concurrent
     // Register/Remove never tears the iteration — it just changes what the NEXT dispatch sees.
+    //
+    // NOTHING may throw out of these four. They are entered from the native thunk across a managed->native
+    // transition, where an escaping managed exception is a rude process abort — not something the game, a
+    // mod, or the loader can catch. HookDispatch.Around isolates the Hook<T> tier, but the RAW tier
+    // (Hooks.Pre / PreNative / PreVtable — the REPL and any mod using it) went straight out of the
+    // transition. Every other seam here is exception-isolated (MainThread.Drain, Coroutines.Step,
+    // Mods.Safe); the hottest one was not.
+    //
+    // Two levels, on purpose. The PER-CALLBACK catch keeps one misbehaving hook from suppressing its
+    // siblings — the loop carries on to the rest. The WHOLE-BODY catch is the invariant itself: it also
+    // covers the table lookup, the HookContext construction, the sret fixup, and a warning sink that
+    // itself throws. Guarding only the loop would enforce the instance (the raw callback that broke
+    // first), not the fact (nothing escapes this transition).
+    static void WarnSafe(nint mi, string what, Exception ex)
+    {
+        // Resolving the label and invoking the sink are themselves fallible, and this runs on the path
+        // whose whole job is to not throw — so the reporting is guarded too, and silence beats a crash.
+        try { OnWarning?.Invoke($"inutil {what} for {NativeLabel(mi)}: {ex.GetType().Name}: {ex.Message}"); }
+        catch { /* a throwing warning sink must never become the abort it was reporting */ }
+    }
+
     [UnmanagedCallersOnly]
     public static int Dispatch(nint methodInfo, CallFrame* f, RetFrame* r)
     {
-        if (!Table.TryGetValue(methodInfo, out var e)) return 0;
-        var pre = e.Pre;
-        if (pre.Length == 0) return 0;
-        int skip = 0;
-        var ctx = new HookContext(f, r, e.Plan, &skip);
-        for (int i = 0; i < pre.Length; i++) pre[i](ctx);
-        // sret + skip: the original never ran, but the caller still expects the sret buffer POINTER in
-        // RAX (Win64). It is the hidden first arg the caller passed — slot 0 of the captured frame.
-        if (skip != 0 && e.Plan.Ret == Loc.Sret) r->Rax = f->Gpr[0];
-        return skip;
+        try
+        {
+            if (!Table.TryGetValue(methodInfo, out var e)) return 0;
+            var pre = e.Pre;
+            if (pre.Length == 0) return 0;
+            int skip = 0;
+            var ctx = new HookContext(f, r, e.Plan, &skip);
+            for (int i = 0; i < pre.Length; i++)
+            {
+                try { pre[i](ctx); }
+                catch (Exception ex) { WarnSafe(methodInfo, $"pre-hook #{i}", ex); }
+            }
+            // sret + skip: the original never ran, but the caller still expects the sret buffer POINTER in
+            // RAX (Win64). It is the hidden first arg the caller passed — slot 0 of the captured frame.
+            if (skip != 0 && e.Plan.Ret == Loc.Sret) r->Rax = f->Gpr[0];
+            return skip;
+        }
+        // Degrade to "don't skip" — the original runs and the caller gets a real value, the same choice
+        // HookDispatch.Around makes when a hook body fails. Never leave the frame half-staged AND skipped.
+        catch (Exception ex) { WarnSafe(methodInfo, "pre-dispatch", ex); return 0; }
     }
 
     [UnmanagedCallersOnly]
     public static void PostDispatch(nint methodInfo, CallFrame* f, RetFrame* r)
     {
-        if (!Table.TryGetValue(methodInfo, out var e)) return;
-        var post = e.Post;
-        if (post.Length == 0) return;
-        var ctx = new HookContext(f, r, e.Plan, null);   // skip is meaningless in post (original already ran)
-        for (int i = post.Length - 1; i >= 0; i--) post[i](ctx);
+        try
+        {
+            if (!Table.TryGetValue(methodInfo, out var e)) return;
+            var post = e.Post;
+            if (post.Length == 0) return;
+            var ctx = new HookContext(f, r, e.Plan, null);   // skip is meaningless in post (original already ran)
+            for (int i = post.Length - 1; i >= 0; i--)
+            {
+                try { post[i](ctx); }
+                catch (Exception ex) { WarnSafe(methodInfo, $"post-hook #{i}", ex); }
+            }
+        }
+        catch (Exception ex) { WarnSafe(methodInfo, "post-dispatch", ex); }
     }
 
     // --- the invoke-path dispatchers (the invoker thunk lands here for __Canon generic methods) ---
@@ -1196,22 +1235,38 @@ public static unsafe class Hooks
     [UnmanagedCallersOnly]
     public static int InvokePre(nint methodInfo, nint obj, void** prms, nint ret)
     {
-        if (!Table.TryGetValue(methodInfo, out var e)) return 0;
-        var pre = e.Pre;
-        if (pre.Length == 0) return 0;
-        int skip = 0;
-        var ctx = new HookContext(e.Plan, prms, (void*)ret, &skip, obj);
-        for (int i = 0; i < pre.Length; i++) pre[i](ctx);
-        return skip;
+        try
+        {
+            if (!Table.TryGetValue(methodInfo, out var e)) return 0;
+            var pre = e.Pre;
+            if (pre.Length == 0) return 0;
+            int skip = 0;
+            var ctx = new HookContext(e.Plan, prms, (void*)ret, &skip, obj);
+            for (int i = 0; i < pre.Length; i++)
+            {
+                try { pre[i](ctx); }
+                catch (Exception ex) { WarnSafe(methodInfo, $"invoke pre-hook #{i}", ex); }
+            }
+            return skip;
+        }
+        catch (Exception ex) { WarnSafe(methodInfo, "invoke pre-dispatch", ex); return 0; }
     }
 
     [UnmanagedCallersOnly]
     public static void InvokePost(nint methodInfo, nint obj, void** prms, nint ret)
     {
-        if (!Table.TryGetValue(methodInfo, out var e)) return;
-        var post = e.Post;
-        if (post.Length == 0) return;
-        var ctx = new HookContext(e.Plan, prms, (void*)ret, null, obj);
-        for (int i = post.Length - 1; i >= 0; i--) post[i](ctx);
+        try
+        {
+            if (!Table.TryGetValue(methodInfo, out var e)) return;
+            var post = e.Post;
+            if (post.Length == 0) return;
+            var ctx = new HookContext(e.Plan, prms, (void*)ret, null, obj);
+            for (int i = post.Length - 1; i >= 0; i--)
+            {
+                try { post[i](ctx); }
+                catch (Exception ex) { WarnSafe(methodInfo, $"invoke post-hook #{i}", ex); }
+            }
+        }
+        catch (Exception ex) { WarnSafe(methodInfo, "invoke post-dispatch", ex); }
     }
 }
