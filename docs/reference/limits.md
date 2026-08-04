@@ -48,25 +48,31 @@ Open holes (Gap 2):
 | delegate arity beyond `Action`≤8 / `Func`≤9 | **bounded** | beyond the bound a param stays wrapper-typed (safe, not silent) |
 | managed `Task`/`Task<T>` hook return vs an **unflipped** il2cpp Task proxy | **fails loud at Discover** | used to be the one *deferred* failure (compiled, bound, threw `MissingMethodException` at the first live call); now rejected at mod load with the fix in the message — spell the il2cpp Task, or patch the interop |
 
-## Natural typing — type IDENTITY is not flipped (silent, not loud)
+## Natural typing — type IDENTITY (closed; the residue is narrow and named)
 
-Natural typing flips *signatures*; it does not flip *what a proxy's CLR type is*. An object reached through
-a seam declared as a base type — a property/field return, a `Dictionary<K, Base>` value, a collection
-element — materialises as a **`Base`-typed proxy even when the object is a `Derived`**, because
-`Il2CppObjectPool.Get<T>` constructs the declared static `T`. So:
+Natural typing flips *signatures*; type IDENTITY is flipped separately, by the exact-type pass
+([exact-proxy-types.md](./exact-proxy-types.md), built). An object reached through a base-declared seam —
+a property/field return, a `Dictionary<K, Base>` value, a collection element, a `System.Object` seam —
+now materialises as a proxy of its **actual** il2cpp class, so `is` / `switch` / `as` say what a modder
+expects and `TryCast<T>()` is an escape hatch rather than the rule. Proven in-game by `exact.*` under both
+loaders.
 
-| Spelling | Interrogates | On a `Derived` behind a `Base` seam |
-|---|---|---|
-| `is` / `switch` / `as` / cast / `GetType()` | the CLR **wrapper** | **false** / base type |
-| `TryCast<T>()` / `Cast<T>()` | the il2cpp **object** | correct |
+What is still declared-typed, by design or by limit:
 
-**This is the one unbridged shape that fails SILENTLY** rather than loud — a `switch` over subtypes matches
-no case and, without a `default`, does nothing at all. It is also asymmetric: code that constructs its own
-objects gets exact proxies, so `is` works until the same code is handed an object that came from the game.
+| Shape | Why |
+|---|---|
+| a **generic instantiation** (`Container<Player>`, `List<T>` itself) | its native class shares an identity with the open definition, so naming it would resolve to a type that cannot be materialised at all — excluded at both ends |
+| `Cast<T>()` / `TryCast<T>()` | **explicit** — the caller named the type it wants; the pass fixes the *implicit* materialisations only |
+| an **ambiguous** il2cpp identity (two proxy types claim it) | dropped rather than guessed; the map file records the drop |
+| a tree whose proxies were patched **in memory only** (the BepInEx preloader's fallback layer) | no map is written that session — natural typing without exact typing |
 
-Today's rule is therefore uniform and total: **never trust `is` on an il2cpp proxy — always `TryCast`.**
-Closing it is specced in [exact-proxy-types.md](./exact-proxy-types.md) (not built); no battery case covers
-the shape, which is why it went unrecorded this long.
+Each of those falls back to the old behaviour — the declared type — which is imprecise, never wrong: a
+resolution is used only when it is assignable to the seam's declared type. `Il2CppObjects.Stats` reports
+`exact / declared / rejected / mapSize` for a tree, and `rejected` is the number that means a map row named
+a type that is **not** a subtype of the seam it was resolved for (the battery asserts it is zero).
+
+One real behaviour change to know: `x.GetType() == typeof(Base)` is now **false** for an object that is
+really a `Derived`. `is`/`as`/`switch` becoming more true is safe; exact `GetType()` equality is not.
 
 The ergonomic `Proceed` call is contract-checked at dispatch (all directed errors, never a frame
 corruption): arity is none-or-all (a partial arg list no longer silently mixes new and stale slots),
@@ -87,6 +93,42 @@ original's result and the warning log gets the exception.
 - **The key check proves existence, not completeness.** It catches a member you *misspelled*; it cannot
   catch one you *omitted*, which stays at its default. A round-trip against the game's own serializer is
   still the way to verify a minted object's shape.
+
+## Threads — what il2cpp work is safe off the main thread
+
+`MainThread.Post` exists because Unity APIs are main-thread-only. il2cpp itself is less strict than that,
+and the line is worth stating because the expensive half of a heavy job can usually be moved off the game
+thread while the cheap half cannot.
+
+**A worker must attach before touching il2cpp at all** — `IL2CPP.il2cpp_thread_attach(il2cpp_domain_get())`,
+and `il2cpp_thread_detach` in a `finally` before the thread exits, or the runtime keeps tracking a dead
+thread.
+
+| On an attached worker | Verdict |
+|---|---|
+| **allocating** il2cpp objects — deserializing a large payload into game types, constructing proxies | **safe (measured)** |
+| **reading** those objects back on the same worker | **safe (measured)** |
+| **mutating a container the GAME owns** — inserting into a live game-owned dictionary | **process-killing AccessViolation (measured)** |
+
+Measured on a real workload: parsing ~19 MB of game JSON into 5569 game-typed objects on an attached
+worker took ~5.4 s and the game held a **full 60 fps throughout** — worst frame-pump gap 584 ms against a
+~540 ms baseline, i.e. one frame of jitter. The same parse on the main thread stalled it for the parse's
+entire duration (a 4.5 s gap in the pump; ~51 fps average over the window). Publishing the result into a
+live game-owned dictionary took **15 ms on the main thread**, and **crashed the process from the worker** —
+`AccessViolation (c0000005)` inside the game assembly, on a stack bottoming out at the CLR thread entry.
+
+So the rule, and it is a good one because the split is lopsided:
+
+> **Parse off-thread, publish on-thread.** Do the allocation-heavy work on an attached worker; marshal the
+> mutation back through `MainThread.Post`. The expensive half parallelises safely; the cheap half is too
+> cheap to be worth the risk.
+
+**Caveat on the crash, stated because it is one data point.** The fault was not isolated to a mechanism —
+a dictionary resize racing a concurrent read, the il2cpp GC write barrier firing from a non-Unity thread,
+and the invoke path needing main-thread GC state are all consistent with the backtrace, and the raw
+addresses do not separate them. The A/B is clean (same data, same call, only the thread differs) so the
+*rule* is sound; the *reason* is not established. Note also that this is the one limit on this page whose
+failure is a native process kill rather than a precise managed exception — loud, but not graceful.
 
 ## Escape hatches
 
