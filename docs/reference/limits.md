@@ -48,6 +48,26 @@ Open holes (Gap 2):
 | delegate arity beyond `Action`≤8 / `Func`≤9 | **bounded** | beyond the bound a param stays wrapper-typed (safe, not silent) |
 | managed `Task`/`Task<T>` hook return vs an **unflipped** il2cpp Task proxy | **fails loud at Discover** | used to be the one *deferred* failure (compiled, bound, threw `MissingMethodException` at the first live call); now rejected at mod load with the fix in the message — spell the il2cpp Task, or patch the interop |
 
+## Natural typing — type IDENTITY is not flipped (silent, not loud)
+
+Natural typing flips *signatures*; it does not flip *what a proxy's CLR type is*. An object reached through
+a seam declared as a base type — a property/field return, a `Dictionary<K, Base>` value, a collection
+element — materialises as a **`Base`-typed proxy even when the object is a `Derived`**, because
+`Il2CppObjectPool.Get<T>` constructs the declared static `T`. So:
+
+| Spelling | Interrogates | On a `Derived` behind a `Base` seam |
+|---|---|---|
+| `is` / `switch` / `as` / cast / `GetType()` | the CLR **wrapper** | **false** / base type |
+| `TryCast<T>()` / `Cast<T>()` | the il2cpp **object** | correct |
+
+**This is the one unbridged shape that fails SILENTLY** rather than loud — a `switch` over subtypes matches
+no case and, without a `default`, does nothing at all. It is also asymmetric: code that constructs its own
+objects gets exact proxies, so `is` works until the same code is handed an object that came from the game.
+
+Today's rule is therefore uniform and total: **never trust `is` on an il2cpp proxy — always `TryCast`.**
+Closing it is specced in [exact-proxy-types.md](./exact-proxy-types.md) (not built); no battery case covers
+the shape, which is why it went unrecorded this long.
+
 The ergonomic `Proceed` call is contract-checked at dispatch (all directed errors, never a frame
 corruption): arity is none-or-all (a partial arg list no longer silently mixes new and stale slots),
 value-typed args must be the exact type (no raw bit-reinterpretation; enums accept their underlying
