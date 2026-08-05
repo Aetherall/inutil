@@ -63,7 +63,17 @@ static int Check(string[] args)
         interop,                            // the loader's il2cpp game proxies
         Path.Combine(bep, "core"),          // Il2CppInterop + BepInEx
         Path.Combine(bep, "plugins"),       // Inutil.dll (Hook<T>/Hooks/lifecycle) + consumer.Sdk.dll
+        Path.Combine(bep, "inutil-libs"),   // boot-emitted shared libraries (ModLibs)
     };
+    // THE LIST ABOVE MUST MIRROR THE HOST'S, IN ORDER. "A clean check == a clean hot-reload" is only
+    // structural if this CLI compiles against the same assemblies, resolved the same way, as
+    // BepInExPlugin.StartCsModLoop hands CsModHost — CsModCompiler takes the FIRST occurrence of a
+    // simple name, so a divergence in membership or in order changes which assembly wins.
+    //
+    // inutil-libs was missing, and that is not a cosmetic gap: a mod that references a shared library
+    // (the ModLibs lifecycle exists precisely so mods CAN) compiles in-game and fails here with CS0246
+    // on a type that is demonstrably loaded in the running process. The check was reporting a defect in
+    // the mod when the defect was in the check.
 
     var csFiles = Directory.EnumerateFiles(modDir, "*.cs", SearchOption.AllDirectories)
         .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}")
