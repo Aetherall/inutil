@@ -98,10 +98,26 @@ public static class CsModCompiler
         string? rt = RuntimeDir();
         if (rt != null) dirs.Add(rt);   // guaranteed BCL source, appended LAST (a present dotnet/ still wins by name)
 
-        string key = string.Join("|", dirs.Select(d =>
-        {
-            try { return d + ":" + Directory.GetLastWriteTimeUtc(d).Ticks; } catch { return d + ":0"; }
-        }));
+        // THE KEY MUST SEE A FILE OVERWRITTEN IN PLACE, and a directory mtime does not.
+        //
+        // This used to be `dir + ":" + Directory.GetLastWriteTimeUtc(dir)`. On Linux (and in the game's
+        // Proton prefix) a directory's mtime changes when an entry is CREATED, REMOVED or RENAMED — not
+        // when an existing file is rewritten. ModLibs emits <libsDir>/<name>.dll by overwriting, and
+        // libsDir is a ref dir, so after the very first boot the emit was invisible to this cache: the
+        // reference set captured while COMPILING the library (before its own .dll was written) was
+        // reused for every mod compiled afterwards.
+        //
+        // The effect was a silent, intermittent trap — edit a shared library, and consumer mods keep
+        // compiling against the PREVIOUS build until something unrelated adds or removes a file in some
+        // ref dir. Measured: six new constants in a library, a cold boot, the library logging a
+        // successful compile, and every consumer failing CS0117 on those constants against a .dll that
+        // demonstrably contained them. It appeared to work the time before only because an unrelated
+        // stale file had been deleted from another ref dir in the same cycle, bumping that dir's mtime.
+        //
+        // So the key now also carries each dir's FILE COUNT and NEWEST FILE mtime: count catches
+        // add/remove, newest-mtime catches rewrite-in-place. Both come from one enumeration that this
+        // method already performs on a miss, and it runs once per compile — immaterial next to Roslyn.
+        string key = string.Join("|", dirs.Select(Fingerprint));
 
         lock (_gate)
         {
@@ -122,6 +138,26 @@ public static class CsModCompiler
             _refs = refs; _refKey = key;
             return refs;
         }
+    }
+
+    // One ref dir's identity for the reference cache: its own mtime, how many DLLs it holds, and the
+    // newest of their mtimes. See the note at the call site for why the directory mtime alone is not
+    // enough. A dir that cannot be read fingerprints as absent rather than throwing — it is simply
+    // skipped when the references are built, so the two agree.
+    static string Fingerprint(string dir)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return dir + ":absent";
+            long newest = 0; int n = 0;
+            foreach (string f in Directory.EnumerateFiles(dir, "*.dll"))
+            {
+                n++;
+                try { long t = File.GetLastWriteTimeUtc(f).Ticks; if (t > newest) newest = t; } catch { }
+            }
+            return $"{dir}:{Directory.GetLastWriteTimeUtc(dir).Ticks}:{n}:{newest}";
+        }
+        catch { return dir + ":0"; }
     }
 
     static bool IsManaged(string dll)
