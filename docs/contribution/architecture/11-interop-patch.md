@@ -28,6 +28,7 @@ runtime is [marshal (12)](./12-marshal.md)'s job; the two are twins over one reg
 | `ParamFlipResolver.cs` | the ONE param-flip detection (container / value-Nullable / delegate) |
 | `ParamFlip.cs`, `ContainerFlip.cs`, `WrapHelpers.cs`, `ReturnTail.cs` | the splice mechanisms — incl. `ParamFlip.LoadsParam`, the ONE "which `ldarg` is this param" rule |
 | `*Rewriter.cs` (`TaskProxyRewriter`, `ContainerReturnRewriter`, `NullableReturnRewriter`, `NullableFieldRewriter`, `ContainerFieldRewriter`, `ArrayRewriter`, `ParamRewriter`) | the per-pass IL emission |
+| `PoolRetargetRewriter.cs`, `ExactTypeExtract.cs` | **type IDENTITY** ([exact-proxy-types](../../reference/exact-proxy-types.md)): retarget the implicit pointer→proxy primitives, and read each proxy's own il2cpp identity out of its cctor into the `inutil.typemap` sidecar |
 | `ResidualAudit.cs` | the post-patch audit — what is STILL wearing a naturalizable il2cpp type, and whether there's a known reason |
 | `WireAttributeRewriter.cs` | re-attaches recovered wire names as `[JsonPropertyName]` ([metadata (16)](./16-metadata.md)) |
 | `GameLayout.cs` | **`GameLocator.Locate`** — the `--game` loader-layout locator |
@@ -74,6 +75,24 @@ schema (see Invariants).
 **The `--game` locator.** `GameLocator.Locate` is pure path logic (no Cecil, no game) that detects the
 loader layout and locates the shared inputs (`InteropDir`, and `GameAssembly.dll` / `global-metadata.dat`
 for [metadata (16)](./16-metadata.md)'s extract stage, which hangs off the *same* located inputs).
+
+**Signatures are not the only lie a proxy can tell.** Every family above flips *what a member's type is
+spelled as*; the pool-retarget pass flips *what a materialized object's CLR type IS*
+([exact-proxy-types](../../reference/exact-proxy-types.md)). Il2CppInterop builds a proxy at the DECLARED
+type of the seam, so a `Boss` read through an `Entity` property was an `Entity` and `is Boss` was false.
+Three things make it a different animal from the families:
+
+- It keys on Il2CppInterop **internals**, not on a correspondence row — hence a `PatchCapabilities` row
+  (like equality pairing) so the marker moves, and a *table* of primitives (`Il2CppObjectPool.Get<T>`,
+  `IL2CPP.PointerToValueGeneric<T>`) checked by exact parameter shape, so a changed internal stops matching
+  instead of retargeting something that no longer means what we think.
+- It is **not game-scoped**. A container ELEMENT read runs inside `Il2Cppmscorlib`'s own `List` proxy — the
+  module every naturalizing family skips — so a game-scoped version fixes every property seam and leaves
+  every element base-typed. (Measured: that was the first in-game run.)
+- It carries a **sidecar**, `inutil.typemap`, written by the directory driver from rows collected across
+  the whole walk (which is what makes an ambiguous il2cpp identity detectable at all). The format lives in
+  [schema (10)](./10-schema.md) — `ExactTypeMap` — because the runtime reads what this seam writes, and
+  that is the same "share the object, not the discipline" rule the family registry follows.
 
 ## The accessor pass
 

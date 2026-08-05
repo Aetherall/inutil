@@ -39,7 +39,7 @@ public readonly struct InvokeResult
 
     /// <summary>Wrap a reference-type return as its interop proxy (0 -> null). A reference return is the raw object ptr, not boxed.</summary>
     public T? As<T>() where T : Il2CppObjectBase
-        => Result == 0 ? null : Il2CppInterop.Runtime.Runtime.Il2CppObjectPool.Get<T>(Result);
+        => Result == 0 ? null : Inutil.Marshal.Il2CppObjects.Get<T>(Result);   // typed by the OBJECT, not by the spelled T
 
     /// <summary>Marshal a string return (null if the return was null).</summary>
     public string? AsString() => Result == 0 ? null : IL2CPP.Il2CppStringToManaged(Result);

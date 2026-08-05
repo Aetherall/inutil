@@ -30,7 +30,7 @@ Reference pages back the guide:
 - [`reference/limits.md`](./reference/limits.md) — the sourced map of what's green, what fails loud, what's roadmap
 - [`reference/roadmap.md`](./reference/roadmap.md) — the next-step candidates (decision menu for the next contributor)
 - [`reference/packaging.md`](./reference/packaging.md) — the distributable engine bundle + the consumption contract (plan)
-- [`reference/exact-proxy-types.md`](./reference/exact-proxy-types.md) — feature request: make `is`/`switch` see the real il2cpp class, not the declared one
+- [`reference/exact-proxy-types.md`](./reference/exact-proxy-types.md) — type identity: `is`/`switch` see the real il2cpp class, not the declared one (built)
 - [`reference/deferred-zero-il2cpp.md`](./reference/deferred-zero-il2cpp.md) — a capability the design deliberately defers, recorded on purpose
 
 **→ I want to understand how it works.** The architecture reference — every component, and the *why*

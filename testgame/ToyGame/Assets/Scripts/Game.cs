@@ -127,6 +127,16 @@ namespace ToyGame
         public override System.Threading.Tasks.Task<Session> OpenSession() => System.Threading.Tasks.Task.FromResult(new Session("session"));
     }
 
+    // CROSS-MODULE derived type: Session is declared in the ToyGame.Core assembly-definition, this override of
+    // it lives in Assembly-CSharp. So a Session-DECLARED seam holding one of these (Game::OpenSessionEx) needs
+    // the exact-type resolution to name a proxy in a DIFFERENT module than the declared type's — the same split
+    // the cross-module virtual Task slot exercises, on the materialization side instead of the flip side.
+    public class SessionEx : Session
+    {
+        public int Rank = 7;
+        public SessionEx(string name) : base(name) { }
+    }
+
     public class Player : IDamageable
     {
         public int Health;
@@ -244,6 +254,35 @@ namespace ToyGame
         public static int   PeekSquadN()  => Squad != null ? Squad.Count : -1;
         public int PeekHighScore() => HighScore;                                            // independent read-back (static storage, shared across instances)
         public int PeekBonus()     => Bonus.HasValue ? Bonus.Value : -1;
+
+        // --- EXACT PROXY TYPES fixture (../../../../docs/reference/exact-proxy-types.md) ---
+        // A base-DECLARED seam holding a DERIVED object. Il2CppInterop materializes a proxy at the seam's
+        // DECLARED type, so a Boss read through any of these arrived as an Entity-typed proxy and `is Boss`
+        // was FALSE — a C# switch over subtypes matched nothing, silently. No other fixture here has this
+        // shape (every hierarchy ToyGame carries is reached through its OWN type), which is exactly why the
+        // leak survived. Every rung it has, because each materializes in a different place:
+        //   Champion  — a PROPERTY (a generated get_ body's pooled read)
+        //   Warden    — a FIELD (the same read through a field wrapper)
+        //   Lineup    — a container ELEMENT: the materialization runs inside Il2Cppmscorlib's OWN
+        //               List proxy, not the game's — the module every other pass deliberately skips
+        //   Warband   — a Dictionary VALUE (a different bridge path than the list element)
+        //   Loot      — a System.Object seam: the WIDEST declared type there is (Il2CppSystem.Object)
+        //   OpenSessionEx — CROSS-MODULE: the declared type's proxy lives in ToyGame.Core.dll while the
+        //               actual type's lives in Assembly-CSharp.dll
+        // Each derived value carries Tag=1000 (Boss's ctor) / Rank=7 (SessionEx), so a battery case can
+        // prove it reached the DERIVED object and not merely a base-typed view of one.
+        public Entity Champion { get; private set; } = new Boss();
+        public Entity Warden = new Boss();
+        public Entity FindChampion() => Champion;
+        public List<Entity> Lineup = new List<Entity> { new Boss(), new Entity() };
+        public Dictionary<string, Entity> Warband = new Dictionary<string, Entity> { ["boss"] = new Boss(), ["mook"] = new Entity() };
+        public object Loot() => new Boss();
+        public Session OpenSessionEx() => new SessionEx("ex");
+        // Read-backs through the game's OWN typed view, so a battery case can prove the seam really holds a
+        // derived object independently of what the proxy claims to be.
+        public int PeekChampionTag() => Champion.Tag;
+        public int PeekLineupTag(int i) => Lineup[i].Tag;
+        public int PeekWarbandTag(string k) => Warband[k].Tag;
 
         // delegate-dispatched calls: the game stores a Func over its OWN method, BUILT IN THE CTOR (before any hook can
         // install), then dispatches THROUGH it. il2cpp's Delegate.Invoke routes through the delegate's method_ptr —

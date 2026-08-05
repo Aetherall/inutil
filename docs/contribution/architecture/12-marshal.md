@@ -27,6 +27,17 @@ il2cpp **work**, never the conversion **structure**.
 
 ## Design
 
+**One materializer, every site** (`Marshal/Il2CppObjects.cs`,
+[exact-proxy-types](../../reference/exact-proxy-types.md)). Turning a pointer into a proxy is its own
+decision, separate from converting a value: the proxy's CLR type must reflect the OBJECT, not the seam it
+came through. Every site that builds one — the hook boundary's `Self`/args/return, `PointerToManaged`'s
+leaf recovery, the reach faces' typed returns, and (via the IL-rewrite seam's retarget) the generated
+proxies themselves — routes through it, and an offline Cecil check over the built `Inutil.dll` fails if
+anything else hand-rolls a proxy from a pointer. The one sanctioned exemption is `MaterializeAs`, for a
+caller that MINTED the object and so knows its class by construction (`ValueTypeBridge`'s own boxes —
+where the wrapper deliberately disagrees with the box's class, since il2cpp boxes a ref-bearing `Nullable`
+as its inner value).
+
 **One entry, one tree per type.** `Il2CppMarshal` builds the `Conv` tree for a spelled managed type once,
 caches it, and drives values through it with the real il2cpp runtime — `ToManaged`/`ToIl2Cpp`,
 `PointerToManaged`, and the frame-value pair `FrameValueToManaged`/`ManagedToFrameValue` a hook boundary

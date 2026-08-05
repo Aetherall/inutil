@@ -140,7 +140,7 @@ public static unsafe class ValueTypeBridge
             byte one = 1; IL2CPP.il2cpp_field_set_value(box, hf, &one);       // hasValue = 1
         }
         GC.KeepAlive(value);
-        return Activator.CreateInstance(nullableProxyType, (IntPtr)box)!;     // wrap the boxed Nullable as its typed proxy
+        return Il2CppObjects.MaterializeAs(nullableProxyType, box);            // a box WE minted -> wrap as exactly that proxy, no resolution
     }
 
     // ── Nullable FIELD/PROPERTY accessor marshalling (NullableFieldRewriter's tail-swap + setter-rebuild targets) ──
@@ -174,7 +174,7 @@ public static unsafe class ValueTypeBridge
     // The getter's box already null-special-cases the Nullable (empty -> 0, present -> a boxed INNER value); wrap that
     // boxed inner as the element proxy via the same pool Il2CppInterop's own reference getters use. 0 -> null (empty).
     public static T? BoxedToRefNullable<T>(nint boxed) where T : Il2CppObjectBase
-        => boxed == 0 ? null : Il2CppInterop.Runtime.Runtime.Il2CppObjectPool.Get<T>(boxed);
+        => boxed == 0 ? null : Il2CppObjects.Get<T>(boxed);   // the ONE materializer (exact-proxy-types.md)
 
     // SETTER (REF-BEARING T): the BARRIERED ref counterpart of WriteNullableField. The generated setter would raw-copy
     // the Nullable<T> bytes, storing the embedded managed reference(s) with NO GC write barrier (the incremental
@@ -337,7 +337,7 @@ public static unsafe class ValueTypeBridge
         uint align = 0; int size = IL2CPP.il2cpp_class_value_size(klass, ref align);
         if (IL2CPP.il2cpp_class_has_references(klass)) WriteBarrieredInto(boxed, data, frameBytes, size);   // heap dst carries refs
         else Buffer.MemoryCopy((void*)frameBytes, (void*)data, size, size);
-        return Activator.CreateInstance(valueProxyType, (IntPtr)boxed)!;   // wrap the boxed object as its typed proxy
+        return Il2CppObjects.MaterializeAs(valueProxyType, boxed);   // a box WE minted -> wrap as exactly that proxy, no resolution
     }
 
     // UNBOX `valueProxy` (a boxed il2cpp value the engine built) and write its value BYTES into the frame slot `dst`.

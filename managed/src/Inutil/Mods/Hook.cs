@@ -55,8 +55,10 @@ internal sealed unsafe class HookBinding
 
     public bool IsStatic => HookMethod.IsStatic;
 
-    // Build the typed receiver from the frame's `this` pointer (il2cpp proxies expose a (IntPtr) ctor).
-    public object? MakeReceiver(nint thisPtr) => thisPtr == 0 ? null : Activator.CreateInstance(ReceiverType, (IntPtr)thisPtr);
+    // Build the typed receiver from the frame's `this` pointer. Through the ONE materializer, so `Self` is typed by
+    // the OBJECT: a hook on a base method dispatched from a derived instance gets a derived `Self`, and `Self is
+    // Boss` answers about the receiver rather than about the hook's declaration (exact-proxy-types.md).
+    public object? MakeReceiver(nint thisPtr) => Il2CppObjects.Materialize(ReceiverType, thisPtr);
 
     // Read the incoming args from the frame into typed managed values for the body.
     public object?[] ReadArgs(HookContext ctx)
@@ -117,7 +119,7 @@ internal sealed unsafe class HookBinding
     //     WRITE it needs the il2cpp GC write barrier for a ref-bearing destination (see WriteArgSlot).
     // Anything the engine can't marshal fails LOUD from the engine (Conv.Build / correspondence), never here — an
     // unknown shape surfaces a clear error, not a wild pointer read.
-    private static bool IsProxy(Type t) => typeof(Il2CppObjectBase).IsAssignableFrom(t);
+    private static bool IsProxy(Type t) => Il2CppObjects.IsProxy(t);   // the ONE "is this a generated proxy" rule
 
     // Needs the box/unbox frame bridge: a naturally-spelled value-type container (int?, (a,b)) OR a ref-bearing
     // game value struct (Il2CppSystem.ValueType-derived, e.g. Loadout). Blittable structs (Vec3) and enums
@@ -133,7 +135,7 @@ internal sealed unsafe class HookBinding
         if (t == typeof(string)) { nint p = ctx.ArgObject(i); return p == 0 ? null : IL2CPP.Il2CppStringToManaged(p); }
         if (NeedsValueFrameBridge(t)) return Il2CppMarshal.FrameValueToManaged((nint)ctx.ArgPointer(i), t);   // by-value: box -> engine
         if (t.IsValueType)            return ReadBlittable((nint)ctx.ArgPointer(i), t);
-        if (IsProxy(t)) { nint p = ctx.ArgObject(i); return p == 0 ? null : Activator.CreateInstance(t, (IntPtr)p); }
+        if (IsProxy(t)) return Il2CppObjects.Materialize(t, ctx.ArgObject(i));   // typed by the OBJECT, not by the declared param
         return Il2CppMarshal.PointerToManaged(ctx.ArgObject(i), t);   // reference-kind container -> the shared engine
     }
 
@@ -195,7 +197,7 @@ internal sealed unsafe class HookBinding
         if (t == typeof(string)) { nint p = ctx.ReturnObject(); return p == 0 ? null : IL2CPP.Il2CppStringToManaged(p); }
         if (NeedsValueFrameBridge(t)) return Il2CppMarshal.FrameValueToManaged((nint)ctx.ReturnPointer(), t);
         if (t.IsValueType)            return ReadBlittable((nint)ctx.ReturnPointer(), t);
-        if (IsProxy(t)) { nint p = ctx.ReturnObject(); return p == 0 ? null : Activator.CreateInstance(t, (IntPtr)p); }
+        if (IsProxy(t)) return Il2CppObjects.Materialize(t, ctx.ReturnObject());   // typed by the OBJECT, not by the declared return
         return Il2CppMarshal.PointerToManaged(ctx.ReturnObject(), t); // reference-kind container -> the shared engine
     }
 

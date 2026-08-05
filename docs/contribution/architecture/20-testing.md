@@ -28,7 +28,7 @@ Neither tier scrapes a log line. That is the whole point of the rewrite's first 
 | `managed/src/*.Tests/` | the **offline** unit projects — `Inutil.Schema.Tests`, `Inutil.InteropPatch.Tests`, `Inutil.Mods.Tests`, `Inutil.Metadata.Tests`, `Inutil.Tests`; each a standalone console app, dependency-free assert harness, exit `0` green / `1` red |
 | `managed/test/Inutil.TestKit/` | the shared record model — `TestModel.cs` (`RecordKind`/`TestStatus`/`TestRecord` + the ONE JSON (de)serializer), `ResultSink.cs` (`IResultSink`/`FileResultSink`), `Aggregator.cs` (`Verdict`/`Judge`) |
 | `managed/test/Inutil.TestKit.Cli/` | the CLI — `Program.cs` (`aggregate <file>` / `selftest`), `SelfTest.cs` (the test-the-tester suite) |
-| `managed/test/Battery/Cases/` | the loader-**agnostic** `Suite` + the case groups: `Smoke`, `TaskFlip`, `Container`, `ContainerFlip`, `Hook`, `ValueType`, `ModHost`, `Repl`, `InteropMarker`, `Safe` |
+| `managed/test/Battery/Cases/` | the loader-**agnostic** `Suite` + the case groups: `Smoke`, `TaskFlip`, `Container`, `ContainerFlip`, `Hook`, `ValueType`, `ModHost`, `Repl`, `InteropMarker`, `ExactType`, `Safe` |
 | `managed/test/Battery/Inutil.Battery.{BepInEx,MelonLoader}/` | the thin per-loader plugin shims — build the `Suite`, register the same cases, write the sidecar |
 | `tools/wine/` | provisions the ToyGame Win64 IL2CPP build + both loaders; `validate.sh` is the end-to-end gate |
 

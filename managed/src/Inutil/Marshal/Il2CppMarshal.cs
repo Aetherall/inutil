@@ -61,7 +61,9 @@ public static class Il2CppMarshal
     {
         if (il2cppPtr == 0) return null;
         Type il2cppType = ContainerBridge.Il2CppTypeOf(For(managedType));
-        object proxy = Activator.CreateInstance(il2cppType, (IntPtr)il2cppPtr)!;
+        // Through the ONE materializer, so a hook's reference-kind value is typed by the OBJECT and not by the
+        // Conv's anchor — the same rule the patched proxies now follow (Il2CppObjects; exact-proxy-types.md).
+        object proxy = Il2CppObjects.Materialize(il2cppType, il2cppPtr)!;
         return ToManagedCore(proxy, managedType);
     }
 

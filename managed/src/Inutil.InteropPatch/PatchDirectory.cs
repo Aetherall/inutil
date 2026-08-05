@@ -45,6 +45,7 @@ public static class InteropPatcher
         var unreadable = new List<string>();
         var residual = new List<Residual>();
         var defers = new List<(string, string)>();
+        var exactRows = new List<ExactTypeRow>();
         int total = 0;
 
         foreach (string path in Directory.EnumerateFiles(interopDir, "*.dll").OrderBy(p => p, StringComparer.Ordinal))
@@ -84,6 +85,17 @@ public static class InteropPatcher
                 foreach (string t in EqualityRewriter.Shadowed(module))
                     residual.Add(new Residual(name, t, "a System.Object virtual is shadowed by a parallel newslot — the CLR never dispatches to it", true));
 
+                // The pool-retarget pass's POSTCONDITION, read the same way: a materialization site still going
+                // through Il2CppInterop's pool is one where a proxy's type is still a fact about the seam it was
+                // reached through. Reported through the same channel as a naturalization hole — same kind of thing.
+                foreach (string s in PoolRetargetRewriter.Remaining(module))
+                    residual.Add(new Residual(name, s, "an il2cpp object is still materialized at the DECLARED type — `is`/`switch` cannot see the actual one", true));
+
+                // Collect this module's proxy-type identities for the exact-type map. Read from the PRE-patch state
+                // is irrelevant here (no pass touches a cctor's class resolution), but it is read per-module inside
+                // the one directory walk so the map can never describe a different set of modules than was patched.
+                exactRows.AddRange(ExactTypeExtract.Rows(module));
+
                 if (result.Flipped > 0 || normalized)
                 {
                     AtomicWrite(module, path);
@@ -112,6 +124,14 @@ public static class InteropPatcher
         // schema-hash X" as a structural fact the loader shim reads at Attach, not something inferred from whether THIS
         // run flipped anything. The hash is over Families.Default(), the same registry every rewriter builds from, so
         // it is the honest content-address of what this patch did (idempotent: an identical marker is not rewritten).
+        // The exact-type map, beside the proxies it describes and written on the SAME schedule as the marker: always,
+        // even when this run flipped nothing, because the map is a standing description of the tree rather than a
+        // record of what one run did. Atomic + idempotent (an unchanged map is not rewritten). It is written from
+        // the rows collected across EVERY module in this one walk, which is what makes an ambiguous il2cpp identity
+        // (two proxy types claiming it) detectable at all — a per-module writer could never see the collision.
+        bool mapChanged = ExactTypeMap.Write(interopDir, exactRows);
+        log?.WriteLine($">> exact-type map {(mapChanged ? "written" : "current")}: {ExactTypeMap.FileName} = {exactRows.Count} proxy type(s)");
+
         string schemaHash = SchemaMarker.Hash(Families.Default());
         bool markerChanged = ContentMarker.Stamp(interopDir, SchemaMarker.InteropMarkerFileName, schemaHash, MarkerNote);
         log?.WriteLine($">> marker {(markerChanged ? "stamped" : "current")}: {SchemaMarker.InteropMarkerFileName} = {schemaHash}");
@@ -160,7 +180,8 @@ public static class InteropPatcher
             .Merge(new ContainerFieldRewriter().RewriteModule(module))
             .Merge(new ArrayRewriter().RewriteModule(module))
             .Merge(new ParamRewriter().RewriteModule(module))
-            .Merge(new EqualityRewriter().RewriteModule(module));
+            .Merge(new EqualityRewriter().RewriteModule(module))
+            .Merge(new PoolRetargetRewriter().RewriteModule(module));
         bool normalized = NormalizeCoreLibRef(module);
         return (result, normalized);
     }

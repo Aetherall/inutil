@@ -17,7 +17,7 @@ The governing invariant, first, because it changes how you read everything below
 - **All three capabilities** — hooking, natural typing, mod hosting — plus the REPL, and the
   escape-hatch faces (`Safe`/`Invoke`/`Probe`/`Introspect`/`Fields`) are built and validated **in-game**.
 - **Both loaders at full parity.** As of this writing the in-game battery passes under BepInEx and
-  MelonLoader identically — **95/95**. That count grows as cases are added; the battery's own run is ground
+  MelonLoader identically — **117/117**. That count grows as cases are added; the battery's own run is ground
   truth, not this number.
 - The v1→v2 engine regressions — delegate params, virtual container-param
   flip, the REPL, the `Fields`/`Introspect`/`Invoke` surface, dual-loader validation — are all

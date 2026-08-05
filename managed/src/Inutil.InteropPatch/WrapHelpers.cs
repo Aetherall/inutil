@@ -101,6 +101,45 @@ public sealed class WrapHelpers
         return gim;
     }
 
+    // Il2CppObjects.Get<T>(IntPtr) -> T — the POOL-RETARGET splice target (PoolRetargetRewriter). Signature-identical
+    // to Il2CppInterop's Il2CppObjectPool.Get<T>, which is what makes the retarget a pure declaring-type swap: the
+    // generic argument, the parameter and the return type are carried over verbatim from the call it replaces.
+    // `t` is imported preserving any generic parameter, because a shared generic body materializes through an OWN
+    // parameter (`List`1<T>::get_Item` calls Get<T>) and !!0 must stay raw.
+    public MethodReference ExactGetClosed(TypeReference t)
+    {
+        var declType = new TypeReference("Inutil.Marshal", "Il2CppObjects", _module, _inutil);
+        var open = new MethodReference("Get", _module.TypeSystem.Void) { DeclaringType = declType, HasThis = false };
+        var tp = new GenericParameter(open);
+        open.GenericParameters.Add(tp);
+        open.ReturnType = tp;                                                     // Get<T> returns T
+        open.Parameters.Add(new ParameterDefinition(_module.TypeSystem.IntPtr));  // (IntPtr il2cppPtr)
+
+        var gim = new GenericInstanceMethod(open);
+        gim.GenericArguments.Add(ImportPreservingGenericParams(t));
+        return gim;
+    }
+
+    // Il2CppObjects.PointerToValueGeneric<T>(IntPtr, bool, bool) -> T — the SECOND pool-retarget splice target.
+    // A read whose element type is a generic PARAMETER (List`1::get_Item, an array's indexer) does not call the
+    // pool at all; it calls Il2CppInterop's own PointerToValueGeneric, which ends in the pool one frame deeper —
+    // inside Il2CppInterop.Runtime, which we do not patch. Signature-identical for the same reason as Get<T>.
+    public MethodReference ExactPointerToValueClosed(TypeReference t)
+    {
+        var declType = new TypeReference("Inutil.Marshal", "Il2CppObjects", _module, _inutil);
+        var open = new MethodReference("PointerToValueGeneric", _module.TypeSystem.Void) { DeclaringType = declType, HasThis = false };
+        var tp = new GenericParameter(open);
+        open.GenericParameters.Add(tp);
+        open.ReturnType = tp;
+        open.Parameters.Add(new ParameterDefinition(_module.TypeSystem.IntPtr));    // (IntPtr objectPointer)
+        open.Parameters.Add(new ParameterDefinition(_module.TypeSystem.Boolean));   // (bool valueType)
+        open.Parameters.Add(new ParameterDefinition(_module.TypeSystem.Boolean));   // (bool refType)
+
+        var gim = new GenericInstanceMethod(open);
+        gim.GenericArguments.Add(ImportPreservingGenericParams(t));
+        return gim;
+    }
+
     // Il2CppMarshal.ToIl2CppTyped<natural>(natural) -> object — the PARAM-flip splice target (the write analog of
     // MarshalToManagedClosed): at a flipped param's load site the seam calls this to DEMATERIALIZE the natural value
     // into its il2cpp counterpart, then castclass to the il2cpp param type. Closed over the natural spelled type.

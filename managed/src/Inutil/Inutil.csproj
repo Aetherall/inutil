@@ -37,6 +37,10 @@
     <Compile Include="Marshal/ValueTypeBridge.cs" />
     <Compile Include="Marshal/ReflectionTypeRef.cs" />
     <Compile Include="Marshal/Il2CppMarshal.cs" />
+    <!-- The ONE materialization primitive (docs/reference/exact-proxy-types.md): a pointer -> a proxy typed at the
+         object's ACTUAL il2cpp class. Also the IL-rewrite seam's second splice target — PoolRetargetRewriter points
+         every generated proxy's Il2CppObjectPool.Get<T> here. -->
+    <Compile Include="Marshal/Il2CppObjects.cs" />
     <!-- The managed hook engine (§7.7 managed half): the substrate-agnostic dispatcher/install/ABI-plan
          core (Hooks), plus the loader glue (Host) that [DllImport]s inutil_core.dll and wires the native
          install callback in. Self-contained over Il2CppInterop.Runtime — no schema/marshaller dependency. -->

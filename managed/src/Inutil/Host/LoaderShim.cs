@@ -19,6 +19,12 @@ public static class LoaderShim
     // so it stays correct before the loader lazily loads the proxies.
     public static void WarnIfInteropUnpatched(string interopDir, System.Action<string> warn)
     {
+        // The shim is the one place that knows the loader's layout, so it is also where the materializer learns
+        // where the exact-type map lives (docs/reference/exact-proxy-types.md). Told here rather than discovered
+        // per-call: both shims already route their interop-dir knowledge through this method, so a second
+        // "where is interop" rule would be exactly the drift this file exists to prevent.
+        Inutil.Marshal.Il2CppObjects.UseInteropDir(interopDir);
+
         switch (CheckInterop(interopDir))
         {
             case MarkerVerdict.Missing:

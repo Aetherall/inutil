@@ -39,6 +39,30 @@ Natural typing is two mechanisms working together, and knowing which is which ex
 Both are driven by **one registry** of type families, so the two seams can never disagree about what's
 supported.
 
+## `is` and `switch` tell the truth
+
+Natural typing covers *how a member's type is spelled*. A third mechanism covers **what an object's type
+IS** — and it exists because Il2CppInterop builds a proxy at the type of the seam you read through, not
+at the type of the object:
+
+```csharp
+Entity champ = game.Champion;   // the seam is declared Entity; the object is a Boss
+
+if (champ is Boss b) …          // TRUE — asks about the object, and gets the right answer
+switch (champ) { case Boss b: … }   // matches
+champ.TryCast<Boss>()           // still works — now an escape hatch, not the rule
+```
+
+Before this landed, `is Boss` was **false** here and a `switch` over subtypes matched nothing at all —
+silently. So if you have read older mod code (or older advice) that says "never trust `is` on a proxy,
+always `TryCast`", that rule is retired. Two things to know:
+
+- `x.GetType() == typeof(Entity)` is now **false** for an object that is really a `Boss`. Exact
+  `GetType()` equality is the one spelling that got *less* true; `is`/`as`/`switch` all got more true.
+- A few shapes still hand you the declared type — generic instantiations most notably. They are listed in
+  [reference/limits.md](../reference/limits.md); each falls back to the old behaviour, which is
+  imprecise, never wrong.
+
 ## What's bridged
 
 | Family | Natural type | Direction | Notes |

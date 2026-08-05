@@ -53,7 +53,7 @@ public static class Invoke
         nint klass = Il2CppClassPointerStore<T>.NativeClassPtr;
         if (klass == 0) return null;
         nint obj = IL2CPP.il2cpp_object_new(klass);
-        return obj == 0 ? null : Il2CppInterop.Runtime.Runtime.Il2CppObjectPool.Get<T>(obj);
+        return obj == 0 ? null : Inutil.Marshal.Il2CppObjects.Get<T>(obj);   // the ONE materializer (exact-proxy-types.md)
     }
 
     // ── guarded invoke by name (the CALL is fault-guarded via Inutil.Safe; a garbage target -> Faulted) ─────

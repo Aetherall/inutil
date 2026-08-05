@@ -66,7 +66,7 @@ public static class ContainerBridge
         // Carrier -> forward the ORIGINAL il2cpp task by identity (rebuild its proxy from the stashed pointer).
         nint fwd = Il2CppSugar.UnwrapTask(managedTask);
         if (fwd != 0)
-            return Activator.CreateInstance(Il2CppTypeOf(node), new object[] { (IntPtr)fwd })!;
+            return Il2CppObjects.Materialize(Il2CppTypeOf(node), fwd)!;   // the ONE materializer (exact-proxy-types.md)
 
         // Fabricate. Generic Task<T> builds Task`1<T'>; a non-generic Task rides a Task`1<bool> upcast (Task<T> : Task).
         bool generic = node.Children.Count == 1;
@@ -574,7 +574,7 @@ public static class ContainerBridge
         Type proxyType = Il2CppTypeOf(node);                                     // closed Il2CppSystem.Action`N / Func`N
         object proxy = proxyType.IsInstanceOfType(il2cppDelegate)
             ? il2cppDelegate
-            : Activator.CreateInstance(proxyType, ((Il2CppObjectBase)il2cppDelegate).Pointer)!;
+            : Il2CppObjects.Materialize(proxyType, ((Il2CppObjectBase)il2cppDelegate).Pointer)!;   // the ONE materializer
 
         int argCount = isFunc ? node.Children.Count - 1 : node.Children.Count;
         var argTypes = new Type[argCount];

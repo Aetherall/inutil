@@ -98,6 +98,18 @@ public class Bootstrap : MonoBehaviour
         // `ent`) AND Entity::Muster (base body) so IL2CPP keeps both methodPointers the lockstep param-flip targets.
         int msBoss = ent.Muster(new List<int> { 1, 2, _tick }); int msBase = new Entity().Muster(new List<int> { _tick });
 
+        // EXACT PROXY TYPES fixture: root every base-declared seam that holds a derived object (a property, a
+        // field, a plain return, a list element, a dictionary value, a System.Object seam, and the cross-module
+        // Session/SessionEx pair) plus their read-backs, so IL2CPP keeps all of them with real methodPointers.
+        // An unrooted seam is a proxy the generator still emits but the game never materializes through — the
+        // fixture would then pass for the wrong reason.
+        Entity champ = _g.Champion; Entity warden = _g.Warden; Entity found = _g.FindChampion();
+        Entity fromList = _g.Lineup[0]; Entity fromDict = _g.Warband["boss"];
+        object loot = _g.Loot(); Session sx = _g.OpenSessionEx();
+        int champTag = _g.PeekChampionTag(), lineTag = _g.PeekLineupTag(0), bandTag = _g.PeekWarbandTag("boss");
+        Debug.Log($"[ToyGame] exact: champ={champ.Tag}/{champTag} warden={warden.Tag} found={found.Tag} " +
+                  $"list={fromList.Tag}/{lineTag} dict={fromDict.Tag}/{bandTag} loot={(loot is Boss ? "boss" : "?")} sx={sx.Name}");
+
         // Nullable AUTO-PROPERTY accessors (Player.Waypoint / Player.Backpack): root BOTH directions of each, so
         // IL2CPP keeps the real get_/set_ methodPointers the METHOD-backed accessor flip targets (an auto-property
         // whose accessors are never called can be reduced to its backing field, which would hide the very shape

@@ -135,6 +135,10 @@ try
         reloaded.Dispose();
     }
 
+    // ── exact proxy types: identity extraction, the map format, the pool retarget, the one-materializer rule ──
+    Console.WriteLine("\n>> exact proxy types (docs/reference/exact-proxy-types.md): identity + map + retarget + site invariant");
+    failures += ExactTypeTests.Run(interopDir, work);
+
     // ── non-virtual Task flip (separate pass): Game::Commit (plain non-virtual Task) flips alone ──
     {
         var module = ModuleDefinition.ReadModule(Copy("Assembly-CSharp.dll"),
@@ -320,6 +324,13 @@ try
 
         // ...and now the audit must report them GONE. Both directions asserted, so neither a blind audit nor an
         // unflipped member can pass silently.
+        //
+        // The container FIELD pass runs first, because the audit is MODULE-WIDE: it reports every member still
+        // wearing a naturalizable il2cpp type, whatever family owns it. Claiming "zero unexplained" on a module
+        // some family has not been run over is only true while the fixture happens to lack that family's shape —
+        // which stopped being true the moment ToyGame gained instance container fields (Game::Lineup/Warband).
+        // Running the pass here keeps the assertion meaning what it says.
+        new ContainerFieldRewriter().RewriteModule(module);
         var postAudit = ResidualAudit.Scan(module);
         Check("audit reports NO unexplained residual after the accessor pass",
             !postAudit.Any(x => x.Unexplained),

@@ -21,5 +21,6 @@ public static class PatchCapabilities
     public static IReadOnlyList<string> All { get; } = new[]
     {
         "equality-pairing/1",   // EqualityRewriter — Equals(object) sourced where GetHashCode came from
+        "exact-proxy-types/1",  // PoolRetargetRewriter + the exact-type map — a proxy is built at the object's ACTUAL class
     };
 }
