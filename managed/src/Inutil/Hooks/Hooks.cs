@@ -330,8 +330,19 @@ public readonly unsafe struct HookContext
     private readonly int* _skip;       // pre-hooks only: a cell in the dispatcher's frame; Skip() writes it
     private readonly nint _thisObj;    // invoke path: il2cpp hands `this` separately (the detour path reads it from Gpr[0])
 
-    internal HookContext(CallFrame* f, RetFrame* r, MethodPlan p, int* skip) { _f = f; _r = r; _p = p; _prm = null; _ret = null; _skip = skip; _thisObj = 0; }
-    internal HookContext(MethodPlan p, void** prm, void* ret, int* skip, nint thisObj) { _p = p; _prm = prm; _ret = ret; _f = null; _r = null; _skip = skip; _thisObj = thisObj; }
+    // Which pre-hook, if any, has already run the original in THIS dispatch. One int cell in the
+    // dispatcher's frame shared by every callback in the loop (-1 = nobody yet); `_slot` is the index of
+    // the callback holding this particular copy of the context. Together they let Proceed tell "the same
+    // body asking twice" (supported) from "a second body wrapping the same method" (the double-run).
+    // Both are inert on the post paths, which pass null/-1 the way they already pass a null skip.
+    private readonly int* _ranBy;
+    private readonly int _slot;
+    private readonly nint _mi;         // for the diagnostic only — the dispatchers hold it, the plan does not
+
+    internal HookContext(CallFrame* f, RetFrame* r, MethodPlan p, int* skip, nint mi = 0, int* ranBy = null, int slot = -1)
+    { _f = f; _r = r; _p = p; _prm = null; _ret = null; _skip = skip; _thisObj = 0; _mi = mi; _ranBy = ranBy; _slot = slot; }
+    internal HookContext(MethodPlan p, void** prm, void* ret, int* skip, nint thisObj, nint mi = 0, int* ranBy = null, int slot = -1)
+    { _p = p; _prm = prm; _ret = ret; _f = null; _r = null; _skip = skip; _thisObj = thisObj; _mi = mi; _ranBy = ranBy; _slot = slot; }
 
     // The receiver (`this`) as a raw Il2CppObject* — 0 for a static method (no receiver). On the detour path
     // `this` is the FIRST positional GPR slot AFTER any hidden sret buffer: an sret return puts its buffer in
@@ -363,6 +374,21 @@ public readonly unsafe struct HookContext
     //
     // Unchanged: an EXPLICIT `Proceed(); Proceed();` still runs the original twice — that is the body asking,
     // and Skip is one idempotent int write. What disappears is only the IMPLICIT extra run by the thunk.
+    //
+    // AND THE OTHER WAY TO RUN IT TWICE IS TWO BODIES, which is the case this refuses. N hooks on ONE method
+    // is supported and is the whole point of "one detour, N hooks" — but N of them WRAPPING it is not: each
+    // was written believing it alone runs the original, so the original runs once per wrapper and every side
+    // effect it has is duplicated. That cannot be caught at registration, because "two hooks on this method"
+    // is legal and common (a wrapper plus an observer) — only "a second body proceeded in this dispatch" is
+    // the defect, and it is knowable exactly here.
+    //
+    // Refusing is not a behaviour change for the caller that asked. The original ALREADY RAN this frame and
+    // its result is still sitting in the RetFrame / out-buffer this context reads, so the wrapper's
+    // `Proceed<R>()` reads the real return either way — it just reads the recorded one instead of provoking
+    // a second call. What it loses is the chance to pass DIFFERENT arguments on the second run; that is the
+    // honest cost, and it is named in the warning rather than swallowed.
+    //
+    // Same-body repeats stay supported: the guard compares WHO proceeded, not whether anyone did.
     // The price, paid deliberately: a faulted original leaves NO result of its own in the frame, so the caller
     // gets the frame as it stands (the thunk's zeroed RetFrame unless a hook wrote one) and the game's own catch
     // never sees its exception — inutil cannot re-raise it back across the transition. A duplicated side effect
@@ -376,10 +402,15 @@ public readonly unsafe struct HookContext
     // object, so a mod's own try/catch around Proceed still sees the game's exception unchanged.
     public bool Proceed()
     {
+        if (_ranBy != null && *_ranBy >= 0 && *_ranBy != _slot)
+        {
+            Hooks.WarnDoubleWrap(_mi, *_ranBy, _slot);
+            return false;
+        }
         bool ran = false;
         try { return ran = Hooks.RunProceed(); }
         catch (Exception ex) { ran = true; Hooks.ProceedFault = ex; throw; }
-        finally { if (ran) Skip(); }
+        finally { if (ran) { Skip(); if (_ranBy != null) *_ranBy = _slot; } }
     }
 
     // Address of arg i's bytes, honoring the active backing.
@@ -1236,6 +1267,30 @@ public static unsafe class Hooks
     // `fromOriginal`: the exception came out of the callback's ctx.Proceed(), i.e. the GAME threw and this
     // callback was merely wrapping it. Without the distinction the line reads as a hook failure, which is the
     // wrong thing to go debug.
+    // Two pre-hooks on one method both wrapped it. Reported ONCE per (method, pair) rather than per call:
+    // the methods this happens on are the hot ones by definition, and a per-call line on a per-frame method
+    // turns a diagnostic into the next freeze. Once is enough to act on — the condition is structural (two
+    // registered bodies), not a rare interleaving, so it does not stop and start.
+    private static readonly ConcurrentDictionary<(nint, int, int), bool> _wrapReported = new();
+
+    internal static void WarnDoubleWrap(nint mi, int ranBy, int slot)
+    {
+        try
+        {
+            if (!_wrapReported.TryAdd((mi, ranBy, slot), true)) return;
+            OnWarning?.Invoke(
+                $"inutil: {NativeLabel(mi)} has TWO hooks that each run the original — pre-hook #{ranBy} " +
+                $"already did, so pre-hook #{slot}'s Proceed() returned the result it left in the frame " +
+                "instead of calling the method a second time. N hooks on one method is supported; N of them " +
+                "WRAPPING it is not — the original would run once per wrapper and duplicate every side " +
+                "effect it has. Give the method one hook that proceeds; the others should observe, Skip, or " +
+                "be folded into it. (If the second body meant to re-run it with DIFFERENT arguments, that " +
+                "is the one thing this refusal costs — do it from the single wrapper instead.) " +
+                "Reported once per method.");
+        }
+        catch { /* the report must never become the fault it describes */ }
+    }
+
     static void WarnSafe(nint mi, string what, Exception ex, bool fromOriginal = false)
     {
         // Resolving the label and invoking the sink are themselves fallible, and this runs on the path
@@ -1256,10 +1311,13 @@ public static unsafe class Hooks
             if (!Table.TryGetValue(methodInfo, out var e)) return 0;
             var pre = e.Pre;
             if (pre.Length == 0) return 0;
-            int skip = 0;
-            var ctx = new HookContext(f, r, e.Plan, &skip);
+            int skip = 0, ranBy = -1;
+            // Constructed per callback because the context is a readonly struct and each one must carry its
+            // OWN slot index — that is what tells "this body proceeding again" from "a second body wrapping
+            // the same method". The shared cells (skip, ranBy) stay in this frame; only the index differs.
             for (int i = 0; i < pre.Length; i++)
             {
+                var ctx = new HookContext(f, r, e.Plan, &skip, methodInfo, &ranBy, i);
                 try { pre[i](ctx); }
                 catch (Exception ex) { WarnSafe(methodInfo, $"pre-hook #{i}", ex, OriginalRaised(ex)); }
             }
@@ -1303,10 +1361,10 @@ public static unsafe class Hooks
             if (!Table.TryGetValue(methodInfo, out var e)) return 0;
             var pre = e.Pre;
             if (pre.Length == 0) return 0;
-            int skip = 0;
-            var ctx = new HookContext(e.Plan, prms, (void*)ret, &skip, obj);
+            int skip = 0, ranBy = -1;
             for (int i = 0; i < pre.Length; i++)
             {
+                var ctx = new HookContext(e.Plan, prms, (void*)ret, &skip, obj, methodInfo, &ranBy, i);
                 try { pre[i](ctx); }
                 catch (Exception ex) { WarnSafe(methodInfo, $"invoke pre-hook #{i}", ex, OriginalRaised(ex)); }
             }

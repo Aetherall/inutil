@@ -244,6 +244,43 @@ public static class HookCases
                 $"the ORIGINAL body ran {ran}x, expected exactly 1 — a throw out of Proceed left the skip cell unset and the thunk auto-ran the side-effecting original a second time");
             return $"a throw inside c.Proceed() ran the original exactly once with no Skip() in the body, and did not abort; the caller saw '{r}'";
         });
+
+        // (13) THE OTHER WAY TO RUN THE ORIGINAL TWICE: two hooks on ONE method that each wrap it. (12) covers
+        //      one body plus the thunk's implicit re-run; this covers two bodies, which no amount of care in
+        //      either one can prevent — each was written believing it alone runs the original, and neither can
+        //      see the other. N hooks on one method is supported and must stay supported (a wrapper plus an
+        //      observer is the ordinary case); N of them PROCEEDING is the defect, and it is detectable only in
+        //      the dispatch that has both. So the invariant is phrased on WHO ran it, not on how many hooks are
+        //      registered — a registration-time count would reject the legal case and still miss this one when
+        //      the two hooks come from different mods loaded at different times.
+        //
+        //      THE ORACLE IS AN ARGUMENT REWRITE, not a run counter, and deliberately so: Tally is pure, so a
+        //      second run of it is invisible in the result — unless the second wrapper first changes what the
+        //      method would be called WITH. So hook #1 rewrites arg0 before proceeding. If its Proceed really
+        //      ran the body, the frame's return is rebuilt from the rewritten arg and the caller sees
+        //      Score+100; if it was refused, the frame still holds hook #0's result and the caller sees
+        //      Score+5. One number tells the two apart, with no fixture field to add — which matters, because
+        //      the sibling case (12)'s ToyGame counter is absent on a build that predates it and skips there.
+        //
+        //      Before the guard this case reads Score+100.
+        suite.Add("hook.proceed.two.wrappers", () =>
+        {
+            var (game, tally) = Target();
+            int score = Score(game);
+            int firstEntered = 0, secondEntered = 0;
+            using var h0 = HookApi.Pre("Assembly-CSharp", "ToyGame", "Game", "Tally",
+                c => { firstEntered++; c.Proceed(); }, argc: 1);
+            using var h1 = HookApi.Pre("Assembly-CSharp", "ToyGame", "Game", "Tally",
+                c => { secondEntered++; c.SetArg<int>(0, 100); c.Proceed(); }, argc: 1);
+            int r = Call(tally, game, 5);
+            // Both must have been ENTERED, or the case proves nothing: a guard that worked by not running the
+            // second hook at all would satisfy the value check while silently breaking every observer hook.
+            Check.True(firstEntered == 1 && secondEntered == 1,
+                $"hook bodies entered {firstEntered}/{secondEntered}x, expected 1/1 — a sibling hook must still RUN; only its Proceed is refused");
+            Check.True(r == score + 5,
+                $"Tally returned {r}, expected Score({score})+5 — the second wrapper's Proceed() called the method a second time, so every side effect it has happens once per wrapper (and here, with the arg it rewrote)");
+            return $"two hooks each called Proceed() on one method; the original ran once for the first, the second read back its {r} instead of re-running, and both bodies ran";
+        });
     }
 
     // --- target resolution + reflective invoke (the TARGET stays proxy-typed only via reflection) ----------
