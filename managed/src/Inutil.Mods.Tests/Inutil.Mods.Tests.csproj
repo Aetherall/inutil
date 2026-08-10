@@ -12,6 +12,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <NoWarn>$(NoWarn);CS0436</NoWarn>
+    <!-- The skip cell a HookContext writes is an int* into the dispatcher's frame, so the Proceed/Skip seam
+         cannot be driven without a real address to hand it. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
     <INUTIL_UNITY_DIR Condition="'$(INUTIL_UNITY_DIR)' == ''">$(MSBuildThisFileDirectory)../../../.unity-build</INUTIL_UNITY_DIR>
     <BepInExDir Condition="'$(BepInExDir)' == ''">$(INUTIL_UNITY_DIR)/loaders/bepinex/BepInEx</BepInExDir>

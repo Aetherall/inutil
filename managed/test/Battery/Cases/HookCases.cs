@@ -169,9 +169,9 @@ public static class HookCases
         //
         //      NB the hits assert comes FIRST and on purpose: CatchThrowingTally catches perfectly well with
         //      no hook installed, so without pinning hits==1 this case would pass green while testing nothing.
-        //      This covers the auto-run path (inutil_thunk_post). The Proceed path (inutil_call_original) is
-        //      annotated to the same standard but is NOT covered here — an exception raised inside c.Proceed()
-        //      escapes through the raw-tier callback, which has no isolation yet (TODO-review H1).
+        //      This covers the auto-run path (inutil_thunk_post): no hook here calls Proceed, so the ORIGINAL is
+        //      the thunk's own CALL and its throw unwinds straight through that frame. The Proceed path
+        //      (inutil_call_original) is annotated to the same standard and is case (12)'s.
         suite.Add("hook.original.throws.unwinds", () =>
         {
             object game = Instance();
@@ -208,24 +208,41 @@ public static class HookCases
 
         // (12) The SAME unwind as (10) but through inutil_call_original — the Proceed path, which runs the
         //      original from a SECOND hand-written frame and so needs its own unwind data (and deliberately no
-        //      SET_FPREG, which would skip its rbx/rsi/rdi restores). What this pins down is the INVARIANT, not
-        //      the route: however the exception raised inside Proceed travels, it must neither abort the process
-        //      nor vanish — the game's own catch still has to see it. Whether it surfaces in the callback and the
-        //      dispatch degrades to auto-running the original, or propagates straight through, is CoreCLR's call,
-        //      not a contract inutil sets — so this asserts the observable, not the mechanism. Depends on (11)'s
-        //      isolation being in place: without it a throw out of Proceed leaves via the raw callback.
+        //      SET_FPREG, which would skip its rbx/rsi/rdi restores) — plus the DOUBLE-RUN invariant, which is
+        //      what this case is really for: entering the original COMMITS THE SKIP (HookContext.Proceed's
+        //      finally), so however the exception travels, the original runs EXACTLY ONCE. Note the body does
+        //      NOT call Skip() — that is the assertion. Before the fix it had to, and a throw from inside
+        //      Proceed made the call dead code: the skip cell stayed 0, the dispatcher swallowed the exception
+        //      (nothing may cross the native transition) and the thunk auto-ran the original AGAIN. In a host
+        //      game that re-ran a whole loot enumeration from row 1, re-registered rows the first pass had
+        //      already registered, and wedged the main thread. ThrowingTallyRuns is what makes a second run
+        //      visible at all — the hook's own counter cannot see it, because the auto-run goes through the
+        //      trampoline and fires no hook.
+        //
+        //      The `r` oracle is deliberately NOT pinned. With the original entered once and the frame skipped,
+        //      whether the game's own catch still sees the exception or the call degrades to the (zeroed) return
+        //      frame depends on how CoreCLR carries an il2cpp C++ EH exception out of the callback — CoreCLR's
+        //      call, not a contract inutil sets. What inutil OWNS here is "exactly once" and "process alive";
+        //      (10) covers the auto-run route's unwind into the game's catch. Depends on (11)'s isolation being
+        //      in place: without it a throw out of Proceed leaves via the raw callback.
         suite.Add("hook.proceed.original.throws", () =>
         {
             object game = Instance();
             MethodInfo catcher = Proxy("Game", "CatchThrowingTally");
+            // il2cpp projects the public field as a property. A fixture predating the counter can't answer the
+            // double-run question at all, so say so with the remedy rather than assert something weaker.
+            PropertyInfo runs = game.GetType().GetProperty("ThrowingTallyRuns")
+                ?? throw new SkipException("this ToyGame build predates Game::ThrowingTallyRuns — rerun 'toygame-build' to arm the double-run oracle");
+            int before = (int)runs.GetValue(game)!;
             int entered = 0;
             using var _ = HookApi.Pre("Assembly-CSharp", "ToyGame", "Game", "ThrowingTally",
-                c => { entered++; c.Proceed(); c.Skip(); }, argc: 1);
+                c => { entered++; c.Proceed(); }, argc: 1);
             string r = (string)catcher.Invoke(game, new object[] { 7 })!;
+            int ran = (int)runs.GetValue(game)! - before;
             Check.True(entered == 1, $"the hook body was entered {entered}x, expected 1 — the Proceed path was not exercised");
-            Check.True(r == "caught:toygame-throw:7",
-                $"the game's own catch produced '{r}', expected 'caught:toygame-throw:7' — a throw raised inside Proceed was swallowed or misrouted");
-            return $"a throw inside c.Proceed() crossed inutil_call_original without aborting; the game's catch still saw it: {r}";
+            Check.True(ran == 1,
+                $"the ORIGINAL body ran {ran}x, expected exactly 1 — a throw out of Proceed left the skip cell unset and the thunk auto-ran the side-effecting original a second time");
+            return $"a throw inside c.Proceed() ran the original exactly once with no Skip() in the body, and did not abort; the caller saw '{r}'";
         });
     }
 

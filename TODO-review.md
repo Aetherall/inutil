@@ -94,9 +94,10 @@ discriminating: stripping one proc's directives fails the build naming that proc
 
 **Behavioural coverage:** `hook.original.throws.unwinds` (HookCases) — a hooked `ThrowingTally` whose
 original throws, called from ToyGame's own `CatchThrowingTally` try/catch. Covers the auto-run path
-(`inutil_thunk_post`). The Proceed path (`inutil_call_original`) is annotated to the same standard but
-has **no behavioural coverage**: an exception raised inside `c.Proceed()` escapes through the raw-tier
-callback, which has no isolation yet — see H1, which must land before that case can be written.
+(`inutil_thunk_post`). The Proceed path (`inutil_call_original`) is `hook.proceed.original.throws`, which
+H1's isolation unblocked — it asserts the invariant inutil owns there (the original is entered exactly
+once, the process survives), not the route the exception takes; see H4 for why the route stopped being
+assertable.
 
 ### [ ] H3 — REPL transports are CSRF-open; loopback binding is not a defence against a browser
 
@@ -118,6 +119,56 @@ reasoning holds for the network and not for the browser.
 - reject any request that carries an `Origin` header;
 - require `Host: 127.0.0.1:<port>`;
 - put a per-boot random token in the URL path, printed in the same log line the tooling already scrapes.
+
+### [x] H4 — A throw from INSIDE `Proceed` re-ran the original — FIXED
+
+**Where:** `Hooks/Hooks.cs` (`HookContext.Proceed`), `Mods/Hook.cs` (`HookDispatch.Proceed`/`Around`),
+`Hooks/Hooks.cs` (`Dispatch`/`InvokePre`).
+
+M5's reorder closed the seam for a throw *after* `Proceed()` returns. When the **ORIGINAL** throws, control
+leaves from inside `Proceed`, so every statement after it — including the `Skip()` the contract asked the
+caller to pair — is dead code. The dispatcher then does what H1 requires of it (swallow; nothing crosses the
+native transition) and returns `skip == 0`, so the thunk **CALLs the original a second time**.
+
+Measured in a host game (OpenTarkov/EFT), not theorised: `GameWorld.SpawnLoot` enumerated its loot payload,
+the game threw partway through, the whole enumeration re-ran from row 1, re-registering already-registered
+items threw `ArgumentException` out of the client, and the main thread wedged.
+
+**Fixed in `HookContext.Proceed`, deliberately not in `HookDispatch.Proceed`.** The raw tier
+(`Hooks.Pre`/`PreNative`/`PreVtable` — the REPL and any consumer probe) calls `ctx.Proceed()` directly and
+had the identical defect, so fixing the typed tier would have enforced the instance that broke rather than
+the fact. One `finally` at the single place the original is entered covers every tier and converts a
+documented caller OBLIGATION into a structural guarantee; `HookDispatch.Proceed`'s now-redundant `Skip()`
+was REMOVED (a second copy reads as the guarantee and invites the next call site to carry its own). The
+commit is gated on `RunProceed` having actually run something, so a `false` return (post-hook, no live
+frame) still doesn't skip a method nobody ran.
+
+**The price, and it is a real trade, not a free win.** A faulted original leaves no result in the frame, so
+the caller gets the frame as it stands and the game's own `catch` no longer sees its exception — inutil
+cannot re-raise it back across the transition. The old behaviour delivered that exception only by running
+the side effect twice. A duplicated side effect is silent and lands in game state; a zero/null return is at
+least loud at the call site. `docs/guide/02-hooking.md` and `docs/reference/limits.md` say so, and tell an
+author whose method needs the game's own error handling to observe it instead of wrapping it.
+
+**The diagnostic was the other half of the cost.** Both "the hook body threw" and "the ORIGINAL threw while
+the body was wrapping it" arrive at the same catch and were reported as `inutil hook X threw …` — false for
+the second, and it sent a debugging session after the mod. `Hooks.ProceedFault` records the exception by
+IDENTITY (no flag to clear, so a body that CAUGHT the game's exception can't mislabel a later one), and both
+tiers append one shared `OriginalRaisedNote`. It avoids the word "threw" on purpose: that word is the
+battery guardrail's marker for a hook dispatch fault, and this is the game's own control flow.
+
+**Coverage, split by what each gate can actually reach.** OFFLINE (`mods-test`, in the `check` gate): the skip
+cell is a plain `int*` and `SetProceed` takes any function pointer, so both non-throwing halves drive the real
+code with no game — "nothing ran ⇒ no skip" (the `ran` gate) and "the original ran ⇒ skipped, with no `Skip()`
+in the body" — plus the identity discriminator (a different exception is never attributed to the original, and
+one fault reports once). Proven non-vacuous by sabotage: restoring the one-line `Proceed` turns the second
+check WRONG and the suite exit 1. IN-GAME (`hook.proceed.original.throws`): the THROWING half, which offline
+cannot reach at all — an `[UnmanagedCallersOnly]` stand-in that throws is a rude abort, not an exception, so
+only a real native original can raise one. That case now carries **no `Skip()` in the body** and asserts the
+ORIGINAL ran exactly once off a new ToyGame counter (`Game::ThrowingTallyRuns`) — a hook-side counter cannot
+see the second run, because the auto-run goes through the trampoline and fires no hook. It needs
+`toygame-build` (on a fixture predating the counter the case SKIPs, naming the remedy) and has **not been run
+here** — no ToyGame boot was available.
 
 ---
 
@@ -211,7 +262,10 @@ outcome is "the original ran" rather than "silently returned null".
 **Fixed by ordering, needing neither a temp nor an un-skip:** stage the frame first
 (`WriteReturn` / `WriteRefOutArgs`), commit `ctx.Skip()` last. `Skip` is idempotent and `Proceed` sets
 its own, so a body that already ran the original keeps its skip and the double-run seam stays closed —
-the two outcomes the alternatives had to special-case fall out of the order.
+the two outcomes the alternatives had to special-case fall out of the order. **Read that last clause
+narrowly:** "`Proceed` sets its own" was true only once `Proceed` had RETURNED, so the seam was closed for
+a throw *after* it and wide open for a throw *from inside* it — see H4, which moved the commit into
+`HookContext.Proceed`'s `finally`.
 
 **Reachability — the finding overstates it, and this is worth recording.** An attempt to write a
 battery case for the degraded path failed to produce one, because *every* arm of `WriteReturnSlot` is

@@ -43,7 +43,11 @@ also auto-run the original), writes the return, and writes back any ref/out para
 one stack, so a single saved/restored slot handles onion nesting (a hook body that provokes another hooked
 call). The whole body is exception-isolated to `Hooks.OnWarning` — one throwing hook never crashes the
 dispatch. `Proceed` maps to the engine's `HookContext.Proceed()`: write the args into the current frame, run
-the original via the trampoline (no detour re-entry), read its return back.
+the original via the trampoline (no detour re-entry), read its return back. `HookDispatch.Proceed` deliberately
+adds no `Skip()` of its own — `HookContext.Proceed` commits it in a `finally`, so "the body took control of
+running the original" has ONE implementation covering this tier, the raw callbacks and the REPL alike (a copy
+here would read as the guarantee, and a call-site guarantee is exactly what could not cover a throw from
+*inside* the original).
 
 **Per-slot marshalling — Layer A here, Layer B in the shared engine.** `HookBinding` owns only the frame ABI
 (a native slot ⇄ its il2cpp representation); the natural⇄il2cpp *conversion* is handed to `Il2CppMarshal`

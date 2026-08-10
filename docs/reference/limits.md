@@ -78,8 +78,13 @@ The ergonomic `Proceed` call is contract-checked at dispatch (all directed error
 corruption): arity is none-or-all (a partial arg list no longer silently mixes new and stale slots),
 value-typed args must be the exact type (no raw bit-reinterpretation; enums accept their underlying
 primitive), and `Proceed<R>`'s `R` must be the declared or the game return type (or a proxy base). Once a
-body has called `Proceed`, a later throw can no longer double-run the original — the caller gets the
-original's result and the warning log gets the exception.
+body has ENTERED the original through `Proceed`, no throw can double-run it — the skip is committed in
+`HookContext.Proceed`'s `finally`, so the guarantee also covers the case a caller-side `Skip()` structurally
+could not: **the original itself throwing**. After a normal `Proceed`, the caller gets the original's result
+and the warning log gets the exception. After a *faulted* one there is no result to hand back: the caller
+gets the return frame as it stands, the game's own `catch` never sees its exception (inutil cannot re-raise
+it across the native transition), and the warning says so in those words. Wrapping a method whose throw the
+game itself handles is therefore a real trade — observe it and let it auto-run instead.
 
 ## Metadata — wire-name recovery
 

@@ -55,7 +55,10 @@ a pointer to the caller's 5th+ stack args into a `CallFrame`, zeroes the `RetFra
 (which may rewrite args and returns a SKIP flag), reloads the possibly-rewritten args, `CALL`s the original unless
 SKIP, spills the return into the `RetFrame`, calls the post-dispatcher, and reloads. A pre-hook's `Skip()` bypasses
 the original and returns whatever the hook left; `Proceed()` runs the original *now* (via `inutil_call_original`,
-the MinHook trampoline — no detour re-entry) so a hook can wrap it (`pre → Proceed() → transform → SetReturn → Skip`).
+the MinHook trampoline — no detour re-entry) so a hook can wrap it (`pre → Proceed() → transform → SetReturn`).
+`Proceed` commits the SKIP itself, in a `finally`, so the thunk's `CALL` is off the moment the original has been
+ENTERED — including when the original throws, where the hook's own trailing `Skip()` is dead code and the
+dispatcher (which must swallow) would otherwise return "don't skip" and run a side-effecting original twice.
 
 **The dispatch key — §7.7 ABI-completeness.** A `HookCtx` tracks `refs`: a body hooked for a single instantiation
 routes unconditionally by the install-bound `MethodInfo*`; only a body shared by `refs>1` reference-type

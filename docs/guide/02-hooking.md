@@ -156,17 +156,29 @@ IDisposable sub = Hooks.Pre(typeof(Game), "Tally", new[] { typeof(int) }, ctx =>
 `ThisPtr`, `Proceed()`, and `Skip()`. The ergonomic `Hook<T>` is built *on* exactly this — it's not a
 separate mechanism, so mixing tiers is safe.
 
+Note there is no `ctx.Skip()` in that example and none is needed: **running the original through `Proceed`
+commits the skip itself**, so the thunk never also auto-runs it. You still call `Skip()` to *cancel* a
+method you never proceeded into. Calling `Proceed()` twice still runs the original twice — that's you
+asking; what can't happen is the engine adding a run you didn't.
+
 ## Safety
 
 A hook body that throws doesn't crash the game — the exception is caught and routed to the loader's
 warning log (`inutil hook Game::Tally threw …`), and the frame continues. One misbehaving mod never
 takes down its siblings or the process.
 
-What happens to the *original* when your body throws depends on where: **before** you called `Proceed`,
-the original auto-runs (a throwing hook degrades to "unhooked"); **after** you called `Proceed`, the
-original has already run under your control and is never run a second time — the caller gets the
-original's result. (A side-effecting game method can therefore never double-fire because your post-Proceed
-code threw.)
+What happens to the *original* when a throw ends your body depends on where it came from:
+
+- **Before you called `Proceed`** — the original auto-runs (a throwing hook degrades to "unhooked").
+- **After `Proceed` returned** — the original already ran under your control and is never run a second
+  time; the caller gets the original's result.
+- **From inside `Proceed`, i.e. the game method itself threw** — same guarantee, and it is the one that
+  matters most: entering the original commits the skip, so a side-effecting game method cannot double-fire.
+  What you give up is the exception: it surfaced in *your* frame, and inutil cannot re-raise it back across
+  the native transition, so the game's own `catch` doesn't see it and the caller gets the return frame as it
+  stands (zero/null unless a hook wrote one). The warning names this case explicitly — "raised by the
+  ORIGINAL method inside ctx.Proceed(), NOT by the hook". If the game's own error handling has to run,
+  don't wrap that method with `Proceed`: observe it and let it auto-run.
 
 If your body returns fine but its **return value can't be marshalled** back into the frame (a
 correspondence mismatch, an unresolvable proxy, a foreign CLR object — the cases `Il2CppMarshal` refuses
@@ -174,10 +186,12 @@ loudly), that failure degrades the same way: the warning is logged and the *orig
 gets a real value. It used to leave the method skipped with a zeroed return slot instead, which handed the
 game a `null` from a reference-returning method — a warning in the log and an NRE at the call site.
 
-The reverse direction is guaranteed too: when the **original throws** — a game method raising a normal
-managed exception — the exception propagates through inutil's frames into whatever `try/catch` the game
-has around the call, exactly as if the method were unhooked. That is not free; il2cpp raises managed
-exceptions as MSVC C++ EH, which unwinds x64 frames only through `.pdata`/`.xdata`, so the asm thunks
+The reverse direction is guaranteed too, for a hook that lets the original **auto-run**: when the
+**original throws** — a game method raising a normal managed exception — the exception propagates through
+inutil's frames into whatever `try/catch` the game has around the call, exactly as if the method were
+unhooked. (A body that ran the original through `Proceed` instead catches it in its own frame — the third
+bullet above.) That is not free; il2cpp raises managed exceptions as MSVC C++ EH, which unwinds x64 frames
+only through `.pdata`/`.xdata`, so the asm thunks
 carry explicit `.seh_*` annotations and the build refuses to link one that doesn't
 (`native/cmake/check-unwind.py`). Without them the unwinder walks past a hook's frame into garbage and the
 game's own `catch` stops working.

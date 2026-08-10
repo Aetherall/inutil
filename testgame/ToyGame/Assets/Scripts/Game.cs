@@ -311,9 +311,15 @@ namespace ToyGame
         // try/catch around a hooked call stopped working", surfacing downstream as NREs off a handler that
         // resumed on a corrupted register context. Dispatched through a ctor-built delegate (like _tallyVia)
         // so il2cpp cannot inline the body away — a detour needs a real methodPointer to patch.
+        // It also SIDE-EFFECTS before throwing, and that counter is the only oracle for the double-run
+        // invariant: when a hook wraps this method with ctx.Proceed(), the engine must enter the original
+        // EXACTLY ONCE even though the throw leaves from inside Proceed. A hook-side counter cannot see the
+        // second run — the thunk's auto-run goes through the trampoline and fires no hook — so the fixture has
+        // to count its own entries. The increment is FIRST so a run that threw is still a run that counted.
         private readonly Func<int, int> _throwingVia;                                      // delegate over ThrowingTally, built in the ctor
+        public int ThrowingTallyRuns;                                                      // entries into the body, throw included
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-        public int    ThrowingTally(int n) => throw new InvalidOperationException("toygame-throw:" + n);
+        public int    ThrowingTally(int n) { ThrowingTallyRuns++; throw new InvalidOperationException("toygame-throw:" + n); }
         public string CatchThrowingTally(int n)                                            // the OUTER managed frame that must catch it
         {
             try { return "no-throw:" + _throwingVia(n); }

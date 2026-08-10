@@ -456,6 +456,43 @@ Console.WriteLine("── HookMatch (offline matcher + diagnostic) ──");
     finally { Inutil.Hooks.Hooks.OnWarning = prev; }
 }
 
+// ── HookContext.Proceed: entering the original COMMITS THE SKIP ─────────────────────────────────────────────
+// The double-run seam. A hook that runs the original itself must leave the thunk's auto-run off, and that used
+// to be a caller obligation (`Proceed(); …; Skip();`) — which structurally cannot cover the case where the
+// ORIGINAL throws, because every statement after Proceed is then dead and the skip cell stays 0. Measured
+// consequence in a host game: a hooked method enumerated a payload, the game threw partway through, the thunk
+// re-ran the whole enumeration from row 1 and re-registering already-registered rows wedged the main thread.
+// Offline reach: the skip cell is a plain int* and `SetProceed` takes any function pointer, so BOTH the
+// "nothing ran" and the "the original ran" halves drive the real code with no game. The THROWING half needs a
+// native original that can raise (an [UnmanagedCallersOnly] stand-in that throws is a rude abort, not an
+// exception) — that is the battery's `hook.proceed.original.throws`, which counts the game-side entries.
+Console.WriteLine("── HookContext.Proceed: entering the original commits the skip ──");
+unsafe
+{
+    int skip = 0;
+    var ctx = new Inutil.Hooks.HookContext(null, null, null!, &skip);   // Proceed/Skip touch only the skip cell
+
+    Inutil.Hooks.Hooks.SetProceed(0);
+    Check("Proceed with nothing to run returns false and does NOT skip (no run to suppress)",
+        !ctx.Proceed() && skip == 0);
+
+    Inutil.Hooks.Hooks.SetProceed((nint)(delegate* unmanaged<int>)&FakeOriginal.Run);
+    Check("Proceed that ENTERED the original commits the skip — with no Skip() in the body",
+        ctx.Proceed() && skip == 1);
+    Inutil.Hooks.Hooks.SetProceed(0);
+
+    // The report's discriminator. "The hook body failed" and "the GAME failed while a body wrapped it" arrive
+    // at one catch, and one text for both sent a debugging session after the mod. Matching by IDENTITY (not a
+    // flag) is what makes a leftover harmless: a body that CAUGHT the game's exception leaves the slot set, and
+    // that value must never be pinned on a later, different exception.
+    var gameEx = new InvalidOperationException("the game's own");
+    var bodyEx = new InvalidOperationException("the hook's own");
+    Inutil.Hooks.Hooks.ProceedFault = gameEx;
+    Check("a DIFFERENT exception is never attributed to the original", !Inutil.Hooks.Hooks.OriginalRaised(bodyEx));
+    Check("the recorded exception IS attributed to the original", Inutil.Hooks.Hooks.OriginalRaised(gameEx));
+    Check("...and is cleared on read, so one fault is reported once", !Inutil.Hooks.Hooks.OriginalRaised(gameEx));
+}
+
 // ── MutableList: the write-through IList<T> adapter ───────────────────────────
 // The adapter forwards every op reflectively to the held list through the SAME member surface an il2cpp List
 // proxy exposes (Count/Item/Add/Insert/RemoveAt/Clear/IndexOf/Remove/Contains) — so a BCL List<int> stands in
@@ -698,6 +735,15 @@ class FakeHook
 // A proxy whose only `_Tick` method is NOT the interface-mangling shape (segment before `_Tick` is `Helper`, not
 // I+Upper) — the Tier-2 shape guard must reject it.
 class FakeItem { }
+// Stands in for the native `proceed` entry the loader wires (inutil_call_original): the ONE thing
+// HookContext.Proceed calls, reporting "a frame was live and the original ran" as a non-zero return. It must not
+// throw — an exception out of an [UnmanagedCallersOnly] stub is a rude process abort, which is exactly why the
+// faulted-original half of the seam is the in-game battery's and not this gate's.
+static unsafe class FakeOriginal
+{
+    [System.Runtime.InteropServices.UnmanagedCallersOnly] public static int Run() => 1;
+}
+
 class FakeIl2CppTask { }                                    // stands in for the UNFLIPPED Il2CppSystem.Threading.Tasks.Task proxy
 class FakeCallback<T> { }                                   // stands in for the game's Comfort.Common.Callback<T'> (the mirror-param target)
 class FakeNoIface { public void Helper_Tick() { } }

@@ -346,12 +346,41 @@ public readonly unsafe struct HookContext
 
     // Run the ORIGINAL method NOW, from inside a PRE hook — the "around" wrap (override M { …; base.M(); … }).
     // Its return is captured into THIS context: read it with Return<T>()/ReturnString()/ReturnObject(), rewrite
-    // it with SetReturn<T>()/SetReturnString(). Pair with Skip() so the thunk does NOT call the original a
-    // SECOND time and returns what Proceed left:  pre-work → Proceed() → read/transform → SetReturn(…) → Skip().
-    // Calling Proceed() twice runs the original twice. The original runs un-hooked (no detour re-entry). Returns
-    // false (no-op) in a post-hook or with no live frame. Works on both the methodPointer-detour and __Canon
-    // invoke paths (the result lands in the same RetFrame / out-buffer this context already reads).
-    public bool Proceed() => Hooks.RunProceed();
+    // it with SetReturn<T>()/SetReturnString():  pre-work → Proceed() → read/transform → SetReturn(…). The
+    // original runs un-hooked (no detour re-entry). Returns false (no-op) in a post-hook or with no live frame.
+    // Works on both the methodPointer-detour and __Canon invoke paths (the result lands in the same RetFrame /
+    // out-buffer this context already reads).
+    //
+    // ENTERING THE ORIGINAL COMMITS THE SKIP — here, in a finally, not as a caller obligation. So the thunk can
+    // never auto-run the original a SECOND time, however control leaves this call. The hand-paired
+    // `Proceed(); …; Skip();` spelling this replaces could only close the path where Proceed RETURNS: when the
+    // ORIGINAL ITSELF throws, control leaves from inside here, every statement after it is dead, the skip cell
+    // stayed 0, and the dispatcher — which must swallow rather than let an exception cross the native transition
+    // — returned "don't skip", so the thunk ran the original AGAIN. Measured in a host game: the hooked method
+    // enumerated a payload, the game threw partway through, the whole enumeration re-ran from the first row, and
+    // re-registering the rows the first pass had already registered threw out of the client and wedged its main
+    // thread. The finally IS the guarantee — do not "simplify" it back out into the call sites.
+    //
+    // Unchanged: an EXPLICIT `Proceed(); Proceed();` still runs the original twice — that is the body asking,
+    // and Skip is one idempotent int write. What disappears is only the IMPLICIT extra run by the thunk.
+    // The price, paid deliberately: a faulted original leaves NO result of its own in the frame, so the caller
+    // gets the frame as it stands (the thunk's zeroed RetFrame unless a hook wrote one) and the game's own catch
+    // never sees its exception — inutil cannot re-raise it back across the transition. A duplicated side effect
+    // is silent, unbounded and lands in game state; a zero/null return is at least loud at the call site, and
+    // the dispatchers name which of the two happened (Hooks.OriginalRaisedNote).
+    //
+    // `ran` gates the commit on the original actually having been ENTERED: RunProceed returns false without
+    // calling anything (post-hook, no live frame, engine not wired), and skipping THAT would bypass a method
+    // nobody ran. A throw means it was entered — the native side reports "no frame" as a false return, never as
+    // an exception. Recording the exception (by identity, for the report) needs a catch; it rethrows the same
+    // object, so a mod's own try/catch around Proceed still sees the game's exception unchanged.
+    public bool Proceed()
+    {
+        bool ran = false;
+        try { return ran = Hooks.RunProceed(); }
+        catch (Exception ex) { ran = true; Hooks.ProceedFault = ex; throw; }
+        finally { if (ran) Skip(); }
+    }
 
     // Address of arg i's bytes, honoring the active backing.
     private void* ArgAddr(int i)
@@ -503,6 +532,33 @@ public static unsafe class Hooks
     private static delegate* unmanaged<int> _proceed;
     public static void SetProceed(nint fnPtr) => _proceed = (delegate* unmanaged<int>)fnPtr;
     internal static bool RunProceed() => _proceed != null && _proceed() != 0;
+
+    // The exception the ORIGINAL raised out of a HookContext.Proceed() on THIS thread — the one fact that
+    // separates "the hook body failed" from "the game's own method failed while a body was wrapping it". Both
+    // arrive at the same catch, and reporting them with one text ("inutil hook X threw …") sent a debugging
+    // session after the mod for an exception the game raised. Held by IDENTITY rather than as a flag: a reporter
+    // matches the exception it actually caught, so a value left behind by a body that CAUGHT the game's
+    // exception can never mislabel a later, different one, and nothing has to be cleared on the dispatch path to
+    // keep it honest.
+    [ThreadStatic] internal static Exception? ProceedFault;
+
+    // True iff `ex` is that exception; clears the slot so one fault is reported once. Cannot throw — it runs
+    // inside the catch blocks whose whole job is that nothing escapes them.
+    internal static bool OriginalRaised(Exception ex)
+    {
+        if (!ReferenceEquals(ProceedFault, ex)) return false;
+        ProceedFault = null;
+        return true;
+    }
+
+    // ONE wording for "the game threw, not the hook", so it reads the same from the typed tier and the raw one.
+    // Deliberately does NOT contain "threw": that word is inutil's marker for a hook dispatch FAULT (the
+    // battery's guardrail — managed/test/Battery/Cases/Suite.cs — fails any case during which one appears), and
+    // a game-side exception surfacing through Proceed is the game's own control flow, which a case may wrap on
+    // purpose. Says "exactly ONCE" because that is now structural (HookContext.Proceed), not a hope.
+    internal const string OriginalRaisedNote =
+        " — raised by the ORIGINAL method inside ctx.Proceed(), NOT by the hook. The original ran exactly ONCE " +
+        "(the engine does not re-run it) and the caller gets the return frame as it stands.";
 
     // native install_vtable(slotAddr, methodInfo, miSlot) -> origPtr: patches a specific class's vtable
     // slot with a generic-thunk closure and returns the saved original pointer (0 on failure). Idempotent.
@@ -1177,11 +1233,18 @@ public static unsafe class Hooks
     // covers the table lookup, the HookContext construction, the sret fixup, and a warning sink that
     // itself throws. Guarding only the loop would enforce the instance (the raw callback that broke
     // first), not the fact (nothing escapes this transition).
-    static void WarnSafe(nint mi, string what, Exception ex)
+    // `fromOriginal`: the exception came out of the callback's ctx.Proceed(), i.e. the GAME threw and this
+    // callback was merely wrapping it. Without the distinction the line reads as a hook failure, which is the
+    // wrong thing to go debug.
+    static void WarnSafe(nint mi, string what, Exception ex, bool fromOriginal = false)
     {
         // Resolving the label and invoking the sink are themselves fallible, and this runs on the path
         // whose whole job is to not throw — so the reporting is guarded too, and silence beats a crash.
-        try { OnWarning?.Invoke($"inutil {what} for {NativeLabel(mi)}: {ex.GetType().Name}: {ex.Message}"); }
+        try
+        {
+            OnWarning?.Invoke($"inutil {what} for {NativeLabel(mi)}: {ex.GetType().Name}: {ex.Message}"
+                              + (fromOriginal ? OriginalRaisedNote : ""));
+        }
         catch { /* a throwing warning sink must never become the abort it was reporting */ }
     }
 
@@ -1198,7 +1261,7 @@ public static unsafe class Hooks
             for (int i = 0; i < pre.Length; i++)
             {
                 try { pre[i](ctx); }
-                catch (Exception ex) { WarnSafe(methodInfo, $"pre-hook #{i}", ex); }
+                catch (Exception ex) { WarnSafe(methodInfo, $"pre-hook #{i}", ex, OriginalRaised(ex)); }
             }
             // sret + skip: the original never ran, but the caller still expects the sret buffer POINTER in
             // RAX (Win64). It is the hidden first arg the caller passed — slot 0 of the captured frame.
@@ -1245,7 +1308,7 @@ public static unsafe class Hooks
             for (int i = 0; i < pre.Length; i++)
             {
                 try { pre[i](ctx); }
-                catch (Exception ex) { WarnSafe(methodInfo, $"invoke pre-hook #{i}", ex); }
+                catch (Exception ex) { WarnSafe(methodInfo, $"invoke pre-hook #{i}", ex, OriginalRaised(ex)); }
             }
             return skip;
         }

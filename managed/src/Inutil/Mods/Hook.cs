@@ -243,16 +243,22 @@ internal static unsafe class HookDispatch
             // RetFrame: the game got null back from a reference-returning method and NRE'd at the call site,
             // with only a warning in the log. With the skip last, a failed marshal degrades to "the original
             // ran" (the caller gets a real value) instead of "the method silently returned null".
-            // Skip is idempotent and Proceed sets it itself, so a body that already ran the original via
-            // Proceed keeps its skip here — the double-run seam stays closed on this path too.
+            // Skip is idempotent and Proceed commits its own in a finally, so a body that already ran the
+            // original via Proceed keeps its skip here — the double-run seam stays closed on this path too.
             b.WriteReturn(ctx, result);
             b.WriteRefOutArgs(ctx, args);                // ref/out params are the replaced method's outputs -> the caller's storage
             ctx.Skip();                                  // the body IS the method now — don't also auto-run the original
         }
         catch (TargetInvocationException tie)
         {
+            // TWO different failures arrive here wearing the same wrapper: the body itself threw, or the GAME
+            // threw and came out THROUGH the body's Proceed(). Reporting both as "inutil hook X threw …" is
+            // false for the second and cost a debugging session spent on the mod while the game was the thing
+            // failing. Only the identity check can tell them apart — the exception object Proceed recorded.
             var inner = tie.InnerException ?? tie;
-            Hooks.Hooks.OnWarning?.Invoke($"inutil hook {b.Label} threw {inner.GetType().Name}: {inner.Message}");
+            Hooks.Hooks.OnWarning?.Invoke(Hooks.Hooks.OriginalRaised(inner)
+                ? $"inutil hook {b.Label}: {inner.GetType().Name}: {inner.Message}{Hooks.Hooks.OriginalRaisedNote}"
+                : $"inutil hook {b.Label} threw {inner.GetType().Name}: {inner.Message}");
         }
         catch (Exception ex)
         {
@@ -279,12 +285,13 @@ internal static unsafe class HookDispatch
                 $"hook declares '{b.ReturnType.Name}' — reading the frame as '{returnType.Name}' would reinterpret raw " +
                 $"bytes/pointers. Use the declared (or the game) return type.");
         b.WriteArgs(_ctx, args);
+        // No Skip() after this call, and the ABSENCE is the point: HookContext.Proceed commits it in a finally,
+        // so "the body has taken control of running the original" has exactly ONE implementation — covering this
+        // tier, the raw Hooks.Pre callbacks and the REPL alike. A copy here would read as the guarantee, and the
+        // guarantee spelled at a call site is precisely what failed: it covered a throw AFTER Proceed returns and
+        // could not cover a throw from INSIDE it. What still holds unchanged: the frame already carries the
+        // original's return, so a throw out of the return-marshal below degrades to that, never to a second run.
         _ctx.Proceed();                                  // runs the original un-hooked; leaves its return in the frame
-        // The body has taken control of running the original: from here on the engine must NEVER auto-run it a
-        // second time — including when the return-marshal below throws. Without this Skip, a throw after Proceed
-        // left the skip cell unset and the dispatcher re-ran a side-effecting original (the double-run seam); the
-        // frame already holds the original's return, the right degraded result.
-        _ctx.Skip();
         return returnType == typeof(void) ? null : b.ReadReturn(_ctx, returnType);
     }
 
