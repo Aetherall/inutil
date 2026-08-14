@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The MelonLoader (IL2CPP / .NET backend) battery shim: a thin MelonMod that runs the SAME loader-
+       agnostic Suite (../Cases) the BepInEx shim runs. Referencing the shared Cases (not copying them) is
+       the point — the two loaders exercise identical test logic, so a case that passes under one and fails
+       under the other is a real loader difference, not a divergence in the test. net6.0 backend. Build:
+         dotnet build -p:Loader=MelonLoader  (default MelonDir points at the staged ToyGame loader tree) -->
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>Inutil.Battery.MelonLoader</AssemblyName>
+    <RootNamespace>Inutil.Battery</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+    <DefineConstants>$(DefineConstants);MELONLOADER</DefineConstants>
+
+    <INUTIL_UNITY_DIR Condition="'$(INUTIL_UNITY_DIR)' == ''">$(MSBuildThisFileDirectory)../../../../.unity-build</INUTIL_UNITY_DIR>
+    <MelonDir Condition="'$(MelonDir)' == ''">$(INUTIL_UNITY_DIR)/loaders/melonloader/MelonLoader</MelonDir>
+    <!-- The built SDK output the hook cases link (validate.sh builds the SDK before this shim). -->
+    <InutilSdkDir Condition="'$(InutilSdkDir)' == ''">$(MSBuildThisFileDirectory)../../../src/Inutil/bin/Release</InutilSdkDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Mod.cs" />
+    <Compile Include="../Cases/*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../Inutil.TestKit/Inutil.TestKit.csproj" />
+  </ItemGroup>
+
+  <!-- MelonLoader's own net6 assemblies (Private=false — the loader has these loaded). -->
+  <ItemGroup>
+    <Reference Include="$(MelonDir)/net6/MelonLoader.dll"><Private>false</Private></Reference>
+    <Reference Include="$(MelonDir)/net6/Il2CppInterop.Runtime.dll"><Private>false</Private></Reference>
+    <Reference Include="$(MelonDir)/net6/Il2CppInterop.Common.dll"><Private>false</Private></Reference>
+    <!-- Il2CppSystem.Collections.Generic.* (Il2Cppmscorlib) — for the ContainerBridge cases. Never flipped. -->
+    <Reference Include="$(MelonDir)/Il2CppAssemblies/Il2Cppmscorlib.dll"><Private>false</Private></Reference>
+    <!-- The inutil SDK: the §7.7 hook engine's typed API that HookCases links (see the BepInEx shim for the
+         rationale). Private=false — validate.sh deploys Inutil.dll from the SDK build. -->
+    <Reference Include="$(InutilSdkDir)/Inutil.dll"><Private>false</Private></Reference>
+    <!-- Inutil.Schema.dll — SchemaMarker / ContentMarker / MarkerVerdict for the §7.2 interop-marker cases
+         (InteropMarkerCases). Already deployed in-game as a runtime dep of Inutil.dll; Private=false binds that
+         identity, never ships a copy. Mirrors the BepInEx battery shim. -->
+    <Reference Include="$(InutilSdkDir)/Inutil.Schema.dll"><Private>false</Private></Reference>
+  </ItemGroup>
+
+</Project>

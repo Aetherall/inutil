@@ -1,0 +1,69 @@
+# --- devenv / direnv / nix ---
+.devenv/
+.devenv.flake.nix
+.direnv/
+devenv.local.nix
+.pre-commit-config.yaml
+
+# --- .NET (managed/) ---
+bin/
+obj/
+*.user
+*.suo
+[Bb]uild/
+artifacts/
+
+# --- native/ (CMake cross builds) ---
+cmake-build*/
+/native/build/
+*.o
+*.obj
+
+# --- secrets: Unity account creds for license activation (NEVER commit) ---
+.env
+.env.*
+!.env.example
+
+# --- wine sandbox used for local testing ---
+.wine/
+wineprefix/
+
+# --- wine-hosted Unity build state dir (prefix + editor + msvc-wine, multi-GB) ---
+/.unity-build/
+# compiled wine shims (built on demand by tools/wine/prepare-prefix.sh)
+/tools/wine/*.exe
+
+# --- vendored tool binaries (downloaded, not committed) ---
+/tools/bin/
+
+# --- packaged engine bundle (built by tools/pack.sh; publishing is a separate decision) ---
+/dist/
+
+# --- Unity test game (testgame/): generated/build outputs only ---
+/testgame/**/Library/
+/testgame/**/Temp/
+/testgame/**/Logs/
+/testgame/**/[Bb]uild/
+/testgame/**/obj/
+
+# --- local runtime/dev-machine state (PIDs, boot logs, one-off tool error dumps) ---
+/.state/
+err.txt
+
+# --- editor / OS junk ---
+.vs/
+.idea/
+*.swp
+.DS_Store
+
+# --- local dev scratch (one-off interop probes + archived earlier code-gen approach) ---
+/managed/Program.cs
+/legacy/
+# validate.sh / check run logs, proxy dumps, one-off probes (never committed)
+/scratchpad/
+
+# refstubs bare-build output (pack-surface uses a scratch dir under .state)
+managed/refstubs/.out/
+.mcp.json
+.agentsroom/handoff-transcript-*.txt
+.agentsroom/handoff-summary-*.md

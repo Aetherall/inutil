@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The BepInEx 6 (IL2CPP) battery shim: a thin BasePlugin that runs the loader-agnostic Suite (../Cases)
+       on load and writes its JSONL sidecar. It references ONLY the loader core + Il2CppInterop + TestKit —
+       NOT the inutil engine — so it exists before the engine and its smoke result is a pure test of the
+       harness loop. net6.0: BepInEx hosts a .NET 6 CoreCLR. Build:
+         dotnet build -p:Loader=BepInEx  (default BepInExDir points at the staged ToyGame loader tree) -->
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>Inutil.Battery.BepInEx</AssemblyName>
+    <RootNamespace>Inutil.Battery</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+    <DefineConstants>$(DefineConstants);BEPINEX</DefineConstants>
+
+    <INUTIL_UNITY_DIR Condition="'$(INUTIL_UNITY_DIR)' == ''">$(MSBuildThisFileDirectory)../../../../.unity-build</INUTIL_UNITY_DIR>
+    <BepInExDir Condition="'$(BepInExDir)' == ''">$(INUTIL_UNITY_DIR)/loaders/bepinex/BepInEx</BepInExDir>
+    <!-- The built SDK output the hook cases link (validate.sh builds the SDK before this shim). -->
+    <InutilSdkDir Condition="'$(InutilSdkDir)' == ''">$(MSBuildThisFileDirectory)../../../src/Inutil/bin/Release</InutilSdkDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Plugin.cs" />
+    <Compile Include="../Cases/*.cs" />
+  </ItemGroup>
+
+  <!-- The shared protocol (Private=true -> Inutil.TestKit.dll is copied beside the plugin and deployed). -->
+  <ItemGroup>
+    <ProjectReference Include="../../Inutil.TestKit/Inutil.TestKit.csproj" />
+  </ItemGroup>
+
+  <!-- BepInEx's own already-loaded assemblies (Private=false — bind the loader's identity, never ship ours). -->
+  <ItemGroup>
+    <Reference Include="$(BepInExDir)/core/BepInEx.Core.dll"><Private>false</Private></Reference>
+    <Reference Include="$(BepInExDir)/core/BepInEx.Unity.IL2CPP.dll"><Private>false</Private></Reference>
+    <Reference Include="$(BepInExDir)/core/BepInEx.Unity.Common.dll"><Private>false</Private></Reference>
+    <Reference Include="$(BepInExDir)/core/Il2CppInterop.Runtime.dll"><Private>false</Private></Reference>
+    <Reference Include="$(BepInExDir)/core/Il2CppInterop.Common.dll"><Private>false</Private></Reference>
+    <!-- Il2CppSystem.Collections.Generic.* (Il2Cppmscorlib) — for constructing a real il2cpp List/Dictionary in
+         the ContainerBridge cases. A framework proxy (never flipped); Private=false. -->
+    <Reference Include="$(BepInExDir)/interop/Il2Cppmscorlib.dll"><Private>false</Private></Reference>
+    <!-- The inutil SDK: the §7.7 hook engine's typed API (Inutil.Hooks.Hooks/HookContext, Inutil.Host.
+         LoaderAdapter) that HookCases links. Private=false — validate.sh deploys Inutil.dll from the SDK build
+         (it is already a runtime dep of the flipped proxies), so this binds the deployed identity, not a copy. -->
+    <Reference Include="$(InutilSdkDir)/Inutil.dll"><Private>false</Private></Reference>
+    <!-- Inutil.Schema.dll — SchemaMarker / ContentMarker / MarkerVerdict for the §7.2 interop-marker cases
+         (InteropMarkerCases). Already deployed in-game as a runtime dep of Inutil.dll; Private=false binds that
+         identity, never ships a copy. -->
+    <Reference Include="$(InutilSdkDir)/Inutil.Schema.dll"><Private>false</Private></Reference>
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,172 @@
+# Limits & roadmap — what's green, what fails loud, what's not built
+
+*Reference. The honest map of inutil's edges — what's green, what fails loud, what's not built. The
+per-component picture is in the [architecture corpus](../contribution/02-system-map.md).
+Verify against the tree, which is updated as work lands.*
+
+The governing invariant, first, because it changes how you read everything below:
+
+> **Every limit here fails LOUD.** A shape inutil can't handle raises a precise exception (a
+> `NotSupportedException` at the marshalling seam), declines to hook (with a diagnostic), or warns at
+> startup. Nothing on this page causes a *silent* wrong value. The one seam where a silent mismatch could
+> have slipped through — a mod compiled for patched proxies loaded over unpatched ones — is closed by a
+> content-addressed marker that warns loud (Gap 3).
+
+## What's green
+
+- **All three capabilities** — hooking, natural typing, mod hosting — plus the REPL, and the
+  escape-hatch faces (`Safe`/`Invoke`/`Probe`/`Introspect`/`Fields`) are built and validated **in-game**.
+- **Both loaders at full parity.** As of this writing the in-game battery passes under BepInEx and
+  MelonLoader identically — **117/117**. That count grows as cases are added; the battery's own run is ground
+  truth, not this number.
+- The v1→v2 engine regressions — delegate params, virtual container-param
+  flip, the REPL, the `Fields`/`Introspect`/`Invoke` surface, dual-loader validation — are all
+  **re-ported and green**. What remains below is coverage holes and un-built ergonomics, not regressions.
+
+## Natural typing — unbridged shapes (all fail loud)
+
+A shape that isn't flipped stays wrapper-typed; your mod either spells the `Il2CppSystem.*` type (compiles
+and works) or hits a `NotSupportedException` at the seam.
+
+**"Fail loud" needed a mechanism to stay true.** It held for shapes a pass *considered* and declined — but a
+member no pass ever classified produced no flip, no defer, no log line, and simply did not appear. Three
+holes lived there (a method-backed `Nullable` accessor, a static container setter, a static `Nullable`
+setter); one of them emitted **invalid IL** rather than declining. `ResidualAudit` now runs after every pass
+and names every member still wearing a type some family could have flipped, marking it a known deferral or
+an **unexplained hole** — see [interop-patch (11)](../contribution/architecture/11-interop-patch.md). The
+fixture asserts zero residual after a directory patch. One soft spot remains, recorded there: the audit's
+`virtual` reason is coarse now that virtual returns *and* accessors both flip, so a virtual residual is
+something to investigate rather than accept.
+
+Open holes (Gap 2):
+
+| Shape | Status | Detail |
+|---|---|---|
+| value-`Nullable` element **inside** a container (`List<Vec3?>`, `Dictionary<…, Loadout?>`) | **roadmap** | defers the whole container flip (empty il2cpp value-Nullable NREs on unbox) |
+| generic-**method** container return/param | **roadmap** | generic-method *Task* returns flip; generic-method *container* return/param does not yet |
+| delegate il2cpp→BCL (a method **returning** a delegate) | **by design, roadmap** | only the BCL→il2cpp direction is bridged — you pass a lambda *in*; you don't receive one out |
+| delegate arity beyond `Action`≤8 / `Func`≤9 | **bounded** | beyond the bound a param stays wrapper-typed (safe, not silent) |
+| managed `Task`/`Task<T>` hook return vs an **unflipped** il2cpp Task proxy | **fails loud at Discover** | used to be the one *deferred* failure (compiled, bound, threw `MissingMethodException` at the first live call); now rejected at mod load with the fix in the message — spell the il2cpp Task, or patch the interop |
+
+## Natural typing — type IDENTITY (closed; the residue is narrow and named)
+
+Natural typing flips *signatures*; type IDENTITY is flipped separately, by the exact-type pass
+([exact-proxy-types.md](./exact-proxy-types.md), built). An object reached through a base-declared seam —
+a property/field return, a `Dictionary<K, Base>` value, a collection element, a `System.Object` seam —
+now materialises as a proxy of its **actual** il2cpp class, so `is` / `switch` / `as` say what a modder
+expects and `TryCast<T>()` is an escape hatch rather than the rule. Proven in-game by `exact.*` under both
+loaders.
+
+What is still declared-typed, by design or by limit:
+
+| Shape | Why |
+|---|---|
+| a **generic instantiation** (`Container<Player>`, `List<T>` itself) | its native class shares an identity with the open definition, so naming it would resolve to a type that cannot be materialised at all — excluded at both ends |
+| `Cast<T>()` / `TryCast<T>()` | **explicit** — the caller named the type it wants; the pass fixes the *implicit* materialisations only |
+| an **ambiguous** il2cpp identity (two proxy types claim it) | dropped rather than guessed; the map file records the drop |
+| a tree whose proxies were patched **in memory only** (the BepInEx preloader's fallback layer) | no map is written that session — natural typing without exact typing |
+
+Each of those falls back to the old behaviour — the declared type — which is imprecise, never wrong: a
+resolution is used only when it is assignable to the seam's declared type. `Il2CppObjects.Stats` reports
+`exact / declared / rejected / mapSize` for a tree, and `rejected` is the number that means a map row named
+a type that is **not** a subtype of the seam it was resolved for (the battery asserts it is zero).
+
+One real behaviour change to know: `x.GetType() == typeof(Base)` is now **false** for an object that is
+really a `Derived`. `is`/`as`/`switch` becoming more true is safe; exact `GetType()` equality is not.
+
+The ergonomic `Proceed` call is contract-checked at dispatch (all directed errors, never a frame
+corruption): arity is none-or-all (a partial arg list no longer silently mixes new and stale slots),
+value-typed args must be the exact type (no raw bit-reinterpretation; enums accept their underlying
+primitive), and `Proceed<R>`'s `R` must be the declared or the game return type (or a proxy base). Once a
+body has ENTERED the original through `Proceed`, no throw can double-run it — the skip is committed in
+`HookContext.Proceed`'s `finally`, so the guarantee also covers the case a caller-side `Skip()` structurally
+could not: **the original itself throwing**. After a normal `Proceed`, the caller gets the original's result
+and the warning log gets the exception. After a *faulted* one there is no result to hand back: the caller
+gets the return frame as it stands, the game's own `catch` never sees its exception (inutil cannot re-raise
+it across the native transition), and the warning says so in those words. Wrapping a method whose throw the
+game itself handles is therefore a real trade — observe it and let it auto-run instead.
+
+## Metadata — wire-name recovery
+
+- **Depends on the game not stripping attribute metadata.** Wire-name recovery reads the game's metadata
+  offline; if a shipped game strips it, member-name remapping **degrades to member-name keys** (no wire
+  remap) — a graceful fallback, never a hard failure, but outside anyone's control once a game ships.
+- **Checked wire shapes inherit that dependency.** `Json.ToNode`/`To<T>(shape)`
+  ([guide 5](../guide/05-wire-json.md)) validates object-literal keys against the *recovered* wire members,
+  so a type absent from the wiremap has nothing to check — it says so loudly rather than rejecting every key
+  as a typo, and such a type is built from a JSON string instead.
+- **The key check proves existence, not completeness.** It catches a member you *misspelled*; it cannot
+  catch one you *omitted*, which stays at its default. A round-trip against the game's own serializer is
+  still the way to verify a minted object's shape.
+
+## Threads — what il2cpp work is safe off the main thread
+
+`MainThread.Post` exists because Unity APIs are main-thread-only. il2cpp itself is less strict than that,
+and the line is worth stating because the expensive half of a heavy job can usually be moved off the game
+thread while the cheap half cannot.
+
+**A worker must attach before touching il2cpp at all** — `IL2CPP.il2cpp_thread_attach(il2cpp_domain_get())`,
+and `il2cpp_thread_detach` in a `finally` before the thread exits, or the runtime keeps tracking a dead
+thread.
+
+| On an attached worker | Verdict |
+|---|---|
+| **allocating** il2cpp objects — deserializing a large payload into game types, constructing proxies | **safe (measured)** |
+| **reading** those objects back on the same worker | **safe (measured)** |
+| **mutating a container the GAME owns** — inserting into a live game-owned dictionary | **process-killing AccessViolation (measured)** |
+
+Measured on a real workload: parsing ~19 MB of game JSON into 5569 game-typed objects on an attached
+worker took ~5.4 s and the game held a **full 60 fps throughout** — worst frame-pump gap 584 ms against a
+~540 ms baseline, i.e. one frame of jitter. The same parse on the main thread stalled it for the parse's
+entire duration (a 4.5 s gap in the pump; ~51 fps average over the window). Publishing the result into a
+live game-owned dictionary took **15 ms on the main thread**, and **crashed the process from the worker** —
+`AccessViolation (c0000005)` inside the game assembly, on a stack bottoming out at the CLR thread entry.
+
+So the rule, and it is a good one because the split is lopsided:
+
+> **Parse off-thread, publish on-thread.** Do the allocation-heavy work on an attached worker; marshal the
+> mutation back through `MainThread.Post`. The expensive half parallelises safely; the cheap half is too
+> cheap to be worth the risk.
+
+**Caveat on the crash, stated because it is one data point.** The fault was not isolated to a mechanism —
+a dictionary resize racing a concurrent read, the il2cpp GC write barrier firing from a non-Unity thread,
+and the invoke path needing main-thread GC state are all consistent with the backtrace, and the raw
+addresses do not separate them. The A/B is clean (same data, same call, only the thread differs) so the
+*rule* is sound; the *reason* is not established. Note also that this is the one limit on this page whose
+failure is a native process kill rather than a precise managed exception — loud, but not graceful.
+
+## Escape hatches
+
+- **`Probe` proves *plausibly* live, not *provably* live.** It catches null / garbage / bad-class
+  pointers; it does **not** catch use-after-free (the GC is non-moving, so freed memory often still
+  validates).
+- **`Safe` tolerates a caught fault, but the runtime may be tainted afterward.** It's a seatbelt for
+  suspect territory and a diagnostic — report and restart, don't loop-retry a faulting call.
+- **`Fields` misses are silent by design** (`false`/`default`, not an exception) — it's discovery code.
+  Prefer the seamless typed member (`player.Health`) when the type is nameable at author time.
+
+## The REPL
+
+- **Sessions are not collectible.** Roslyn submission assemblies persist for the session's life (the hooks
+  a session registers *are* removable). A `:reset` that reclaims memory is roadmap.
+- **A line can't `await` a main-thread primitive** — it fails loud rather than deadlocking. Do async /
+  per-frame work from a hook or coroutine.
+- **Opt-in.** The loader doesn't open a REPL port; you start `ReplServer` from a mod/coremod. Loopback
+  only.
+
+## Packaging & build
+
+- **A `pack` target exists; no *published* release yet.** `tools/pack.sh` produces a versioned bundle in
+  `dist/<version>/` (both loader trees + the runnable patch CLI); what's left before a published release —
+  the schema-marker version tie and a publish channel — is tracked in [packaging](./packaging.md). For now you
+  run `pack.sh` (or build in place and deploy the DLLs beside your loader, [1. Setup](../guide/01-setup-first-mod.md)).
+- **The native engine (`inutil_core.dll`) is cross-compiled** with the vendored mingw toolchain
+  (`ninja -C native/build inutil_core`); see `native/` and `tools/wine/validate.sh` for the reference
+  build. A prebuilt native binary distribution is roadmap.
+
+## Where these get closed
+
+Each hole above is a well-scoped contribution. A natural-typing family is one registration in
+`managed/src/Inutil.Schema/Families.cs`; the flip-scope holes are extensions of the existing
+`ParamFamily`/`ContainerFlip` machinery. See [the contribution workflow](../contribution/01-philosophy.md)
+and [the roadmap](./roadmap.md) for the current next-step candidates.

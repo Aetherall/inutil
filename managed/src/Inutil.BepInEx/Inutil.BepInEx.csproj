@@ -1,0 +1,63 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The PRODUCTION BepInEx entrypoint (§7.10): a thin BasePlugin over the SDK. Attaches the hook engine,
+       injects a resident MonoBehaviour pump whose Update/OnGUI one-line into FrameDriver (so the ITick/IGui
+       seams are driven — the bug that shipped in v1's MelonLoader host can't recur), and starts the no-build
+       .cs mod loop (Inutil.Mods). Everything else lives in Inutil.dll / Inutil.Mods.dll, shared verbatim with
+       the MelonLoader host. Builds against the staged loader tree. Build:
+         dotnet build managed/src/Inutil.BepInEx/Inutil.BepInEx.csproj -->
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>Inutil.BepInEx</AssemblyName>
+    <RootNamespace>Inutil.Host</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+    <DefineConstants>$(DefineConstants);BEPINEX</DefineConstants>
+
+    <INUTIL_UNITY_DIR Condition="'$(INUTIL_UNITY_DIR)' == ''">$(MSBuildThisFileDirectory)../../../.unity-build</INUTIL_UNITY_DIR>
+    <BepInExDir Condition="'$(BepInExDir)' == ''">$(INUTIL_UNITY_DIR)/loaders/bepinex/BepInEx</BepInExDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="BepInExPlugin.cs" />
+  </ItemGroup>
+
+  <!-- The SDK + the mod host (Roslyn lives behind Inutil.Mods). Private=false — validate.sh deploys these from
+       their own builds so the shim binds the deployed identity, not a private copy. Inutil.InteropPatch backs
+       the phase-2 disk persist (PersistInteropPatch — the on-disk PatchDirectory the offline CLI also runs);
+       its Mono.Cecil binds the loader's already-loaded copy by simple name. -->
+  <ItemGroup>
+    <ProjectReference Include="../Inutil/Inutil.csproj"><Private>false</Private></ProjectReference>
+    <ProjectReference Include="../Inutil.Mods/Inutil.Mods.csproj"><Private>false</Private></ProjectReference>
+    <ProjectReference Include="../Inutil.InteropPatch/Inutil.InteropPatch.csproj"><Private>false</Private></ProjectReference>
+  </ItemGroup>
+
+  <!-- BepInEx + Il2CppInterop + UnityEngine (the injected pump needs GameObject/MonoBehaviour + ClassInjector).
+       Private=false — bind the loader's already-loaded identity, never ship ours. The core (BepInEx +
+       Il2CppInterop) assemblies come from the pinned zip — game-free always. The GENERATED interop proxies
+       (UnityEngine.CoreModule / UnityEngine / Il2Cppmscorlib) are normal-mode only: -p:RefStubs=true swaps
+       them for the committed ref-stubs (managed/refstubs/), so the host builds with NO booted game. (No
+       UnityEngine.dll stub: every type the pump binds lives in CoreModule; the facade ref is normal-mode
+       convenience only.) -->
+  <ItemGroup>
+    <Reference Include="$(BepInExDir)/core/BepInEx.Core.dll"><Private>false</Private></Reference>
+    <Reference Include="$(BepInExDir)/core/BepInEx.Unity.IL2CPP.dll"><Private>false</Private></Reference>
+    <Reference Include="$(BepInExDir)/core/BepInEx.Unity.Common.dll"><Private>false</Private></Reference>
+    <Reference Include="$(BepInExDir)/core/Il2CppInterop.Runtime.dll"><Private>false</Private></Reference>
+    <Reference Include="$(BepInExDir)/core/Il2CppInterop.Common.dll"><Private>false</Private></Reference>
+    <Reference Include="$(BepInExDir)/interop/UnityEngine.CoreModule.dll" Condition="'$(RefStubs)' != 'true'"><Private>false</Private></Reference>
+    <Reference Include="$(BepInExDir)/interop/UnityEngine.dll" Condition="'$(RefStubs)' != 'true'"><Private>false</Private></Reference>
+    <!-- Il2CppSystem.Object — the base of every UnityEngine proxy (GameObject/MonoBehaviour), needed to
+         construct + AddComponent the injected pump. A framework proxy (never flipped); Private=false. -->
+    <Reference Include="$(BepInExDir)/interop/Il2Cppmscorlib.dll" Condition="'$(RefStubs)' != 'true'"><Private>false</Private></Reference>
+    <Reference Include="$(RefStubsDir)/UnityEngine.CoreModule.dll" Condition="'$(RefStubs)' == 'true'"><Private>false</Private></Reference>
+    <Reference Include="$(RefStubsDir)/Il2Cppmscorlib.dll" Condition="'$(RefStubs)' == 'true'"><Private>false</Private></Reference>
+  </ItemGroup>
+
+</Project>

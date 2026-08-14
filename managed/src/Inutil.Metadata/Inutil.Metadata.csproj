@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- inutil.Metadata — the AUTHOR-TIME metadata pillar (docs/contribution/architecture/16-metadata.md). This is the ONE assembly that bears
+       Cpp2IL, the §7 "hard line" quarantine: it ingests a game's GameAssembly.dll + global-metadata.dat, recovers
+       the authored semantic facts (wire names, converters, [SerializeField], nullability) that Il2CppInterop's
+       generated proxies strip, and emits author-time sidecars. It is OFFLINE only — never in the runtime graph.
+
+       Dependency isolation (the invariant a build check enforces): the shipped runtime SDK (Inutil.dll) references
+       only Inutil.Schema and must have NO transitive edge to this assembly or to Cpp2IL. Cpp2IL 2022.1.x uses
+       AsmResolver internally (not Mono.Cecil), so there is no reader-version conflict with Inutil.InteropPatch's
+       Mono.Cecil 0.11.5 — the stub is written to disk by AsmResolver and re-read by Cecil (CecilMemberRef), a clean
+       filesystem boundary.
+
+       Cpp2IL is pinned to the 2022.1.x line (the only one that reads modern Unity metadata, e.g. ToyGame's v31; the
+       stable 2022.0.7.2 supports only metadata 24-29). Tracking Cpp2IL's release line is the per-Unity-version tax
+       §9 named — the accepted cost of depending on a maintained reader rather than hand-rolling a .dat parser (§4). -->
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Inutil.Metadata</RootNamespace>
+    <AssemblyName>Inutil.Metadata</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The pure wire schema (WireRegistry / IMemberRef) and the Cecil projection (CecilMemberRef, reused as the
+         stub reader). InteropPatch brings Mono.Cecil 0.11.5 transitively. -->
+    <ProjectReference Include="../Inutil.Schema/Inutil.Schema.csproj" />
+    <ProjectReference Include="../Inutil.InteropPatch/Inutil.InteropPatch.csproj" />
+    <!-- The maintained IL2CPP metadata reader (§4 non-goal: do not hand-roll a .dat parser). 2022.1.x reads v31. -->
+    <PackageReference Include="Samboy063.Cpp2IL.Core" Version="2022.1.0-pre-release.21" />
+  </ItemGroup>
+
+</Project>

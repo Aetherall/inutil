@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The host-side CLI. Two commands:
+         aggregate <sidecar.jsonl>   read a battery's records, print the verdict, exit 0 (green) / 1 (red).
+                                     This is what the wine driver gates the build on.
+         selftest                    feed the aggregator known-bad inputs and REQUIRE each to go red, and a
+                                     complete one to go green. This is how we test the tester — the guard
+                                     against ever shipping another harness that exits SUCCESS while ignoring
+                                     failures (docs/contribution/architecture/20-testing.md).
+       net9.0: the only runtime installed here, so it runs directly with no roll-forward. -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Inutil.TestKit.Cli</RootNamespace>
+    <AssemblyName>inutil-testkit</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Inutil.TestKit/Inutil.TestKit.csproj" />
+  </ItemGroup>
+
+</Project>

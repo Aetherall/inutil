@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- inutil-interoppatch — the host CLI that applies the IL-rewrite seam (§7.2) to a directory of Il2CppInterop
+       proxies, in place + atomically. Patches DLLs on disk and loads no il2cpp domain, so it runs anywhere a
+       runtime does.
+
+       MULTI-TARGETED, and net6.0 is not a courtesy: a consumer's PRE-LAUNCH pass is the only place some proxies
+       can ever be patched (a loader binds them before any in-process patcher exists, and a bound module cannot be
+       replaced for the process lifetime). The runtime available at that moment is whatever the loader ships —
+       BepInEx 6's CoreCLR is net6 — and it is a flat runtime directory with no host, so it is driven through
+       coreclr_execute_assembly against THIS dll. Targeting only the maintainer's installed runtime would put that
+       pass out of reach. net9.0 stays for the host CLI. Both targets build the same source. -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworks>net6.0;net9.0</TargetFrameworks>
+    <AssemblyName>inutil-interoppatch</AssemblyName>
+    <RootNamespace>Inutil.InteropPatch.Cli</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Inutil.InteropPatch/Inutil.InteropPatch.csproj" />
+  </ItemGroup>
+
+</Project>

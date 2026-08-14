@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- inutil-metadata-extract — the metadata pillar's OPT-IN author-time CLI (docs/contribution/architecture/16-metadata.md). It ingests
+       a game's GameAssembly.dll + global-metadata.dat and emits the authored inutil.wiremap.json wire map. Deliberately a
+       SEPARATE entrypoint from inutil-interoppatch (which stays Cpp2IL-free and fast): the extract stage is opt-in
+       per-modder and never on the patch/runtime path — a modder who only hooks a method never builds or runs this.
+       It reuses the SAME GameLocator the patch CLI uses, so both stages resolve the identical shared inputs. -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Inutil.Metadata.Cli</RootNamespace>
+    <AssemblyName>inutil-metadata-extract</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Inutil.Metadata/Inutil.Metadata.csproj" />
+  </ItemGroup>
+
+</Project>
