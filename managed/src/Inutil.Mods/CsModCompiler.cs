@@ -73,7 +73,10 @@ public static class CsModCompiler
 
         using var peStream = new MemoryStream();
         using var pdbStream = new MemoryStream();
-        EmitResult emit = comp.Emit(peStream, pdbStream);
+        EmitResult emit = comp.Emit(
+            peStream,
+            pdbStream,
+            options: new EmitOptions(debugInformationFormat: DebugInformationFormat.PortablePdb));
 
         string[] errors = emit.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error).Select(Fmt).ToArray();
         string[] warnings = emit.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Warning).Select(Fmt).Take(20).ToArray();

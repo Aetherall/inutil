@@ -95,6 +95,8 @@ Console.WriteLine("── CsModCompiler + ModContext + Discover + FrameDriver + 
 var r = CsModCompiler.Compile("samplemod", new[] { Path.Combine(modDir, "SampleMod.cs") }, refDirs);
 if (!r.Ok) foreach (string e in r.Errors) Console.WriteLine($"     compile error: {e}");
 Check($"CsModCompiler compiles the mod (refs={r.RefCount})", r.Ok && r.Pe is { Length: > 0 });
+Check("CsModCompiler emits a portable PDB", r.Pdb is { Length: >= 4 }
+    && r.Pdb[0] == 'B' && r.Pdb[1] == 'S' && r.Pdb[2] == 'J' && r.Pdb[3] == 'B');
 
 if (r.Ok)
 {
